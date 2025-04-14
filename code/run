@@ -2,4 +2,10 @@
 set -ex
 
 # This is the master script for the capsule. When you click "Reproducible Run", the code in this file will execute.
-python -u run_capsule.py "$@"
+python -u run_camera_correction_top.py "$@"
+
+# The previous version of this file was commented-out and follows below:
+#
+# # echo $@
+# python -u run_camera_correction_top.py "$@"
+# 
