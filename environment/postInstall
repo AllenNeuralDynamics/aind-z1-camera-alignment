@@ -3,3 +3,4 @@ set -e
 pip install aind-data-transfer[imaging]==0.25.2
 pip install kerchunk
 pip install hdf5plugin
+pip install -e git+https://github.com/AllenNeuralDynamics/hcr-data-qc.git#egg=hcr-data-qc
