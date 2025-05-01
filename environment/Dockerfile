@@ -24,5 +24,9 @@ RUN pip install -U --no-cache-dir \
     tifffile==2023.7.10 \
     zarr==2.16.0
 
+RUN git clone https://github.com/AllenNeuralDynamics/hcr-data-qc \
+    && cd hcr-data-qc \
+    && pip install -e .
+
 COPY postInstall /
 RUN /postInstall
