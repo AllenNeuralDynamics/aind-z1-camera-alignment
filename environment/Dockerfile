@@ -29,7 +29,7 @@ RUN pip install -U --no-cache-dir \
     aind-data-transfer[imaging]==0.25.2 \
 
 RUN pip install -U --no-cache-dir --upgrade \
-    git+https://github.com/AllenNeuralDynamics/hcr-data-qc.git@${QC_PKG_COMMIT}#egg=hcr-data-qc
+    git+https://github.com/AllenNeuralDynamics/hcr_data_qc.git@${QC_PKG_COMMIT}#egg=hcr_data_qc
 
 COPY postInstall /
 RUN /postInstall
