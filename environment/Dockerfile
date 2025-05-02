@@ -26,7 +26,7 @@ RUN pip install -U --no-cache-dir \
     seaborn==0.13.2 \
     tifffile==2023.7.10 \
     zarr==2.16.0 \
-    aind-data-transfer[imaging]==0.25.2 \
+    aind-data-transfer[imaging]==0.25.2
 
 RUN pip install -U --no-cache-dir --upgrade \
     git+https://github.com/AllenNeuralDynamics/hcr_data_qc.git@${QC_PKG_COMMIT}#egg=hcr_data_qc
