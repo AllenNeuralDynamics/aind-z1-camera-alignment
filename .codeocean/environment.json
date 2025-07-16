@@ -1,0 +1,74 @@
+{
+	"version": 1,
+	"base_image": "codeocean/lightning-jupyterlab-py39:1.0",
+	"args": [
+		"AWS_ACCESS_KEY_ID",
+		"AWS_DEFAULT_REGION",
+		"AWS_SECRET_ACCESS_KEY",
+		"CUSTOM_KEY"
+	],
+	"options": {
+		"registry_host_arg": true,
+		"git_ask_pass": true
+	},
+	"installers": {
+		"pip": {
+			"packages": [
+				{
+					"name": "aind-data-transfer[imaging]",
+					"version": "0.25.2"
+				},
+				{
+					"name": "codeocean",
+					"version": "0.3.0"
+				},
+				{
+					"name": "cupy-cuda11x",
+					"version": "12.3.0"
+				},
+				{
+					"name": "dask",
+					"version": "2023.7.1"
+				},
+				{
+					"name": "hdf5plugin",
+					"version": "5.1.0"
+				},
+				{
+					"name": "kerchunk",
+					"version": "0.2.7"
+				},
+				{
+					"name": "matplotlib",
+					"version": "3.9.2"
+				},
+				{
+					"name": "numpy",
+					"version": "1.24.4"
+				},
+				{
+					"name": "pyyaml",
+					"version": "6.0.1"
+				},
+				{
+					"name": "scikit-image",
+					"version": "0.21.0"
+				},
+				{
+					"name": "seaborn",
+					"version": "0.13.2"
+				},
+				{
+					"name": "tifffile",
+					"version": "2023.7.10"
+				},
+				{
+					"name": "zarr",
+					"version": "2.16.0"
+				}
+			],
+			"options": {},
+			"pre_install_options": {}
+		}
+	}
+}
