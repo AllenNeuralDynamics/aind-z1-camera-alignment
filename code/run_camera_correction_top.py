@@ -62,7 +62,7 @@ def load_data_description() -> str:
     search_patterns = [
         base_data_dir / "output_aind_metadata" / "data_description.json",
         base_data_dir / "data_description.json",
-        glob.glob(f"{base_data_dir.as_posix()}/data_description.json")[0],  # Any subdirectory
+        # glob.glob(f"{base_data_dir.as_posix()}/data_description.json")[0],  # Any subdirectory
         # glob.glob(f"{base_data_dir.as_posix()}/*/data_description.json")[0], 
         
     ]
