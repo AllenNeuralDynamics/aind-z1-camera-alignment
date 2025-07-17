@@ -133,7 +133,7 @@ def process_zarr_datasets():
         "bucket": "aind-open-data",
         "s3_bucket": "aind-open-data",
         "z_correct": False,  # Default to 2D correction
-        "pipeline": False,  # Always use pipeline mode for S3 data
+        "pipeline": True,  # Always use pipeline mode for S3 data
         "s3_zarr_path": s3_path,  # Pass S3 path for zarr tiles
     }
     
