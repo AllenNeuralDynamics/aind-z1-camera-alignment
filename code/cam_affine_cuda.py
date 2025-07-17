@@ -19,6 +19,9 @@ from s3_writer import save_tile, get_resolution_zyx, save_corrected_tiles_to_s3
 from co_api import list_data_directory
 from typing import List, Dict, Any
 import pathlib
+from utils import (
+    list_zarr_tiles_from_s3,
+)
 
 
 
@@ -43,12 +46,13 @@ def main(args):
         qc_results_dir = results_root + name + "/tile_qc_plots/" #unnecessary 
 
         #TODO add failsafe code that submits calc_affine() with the path to the folder radial_correction_temp, which contains the zarr files to do camera_alignment on
-        
-        rc_data_folder_list = list(Path(data_folder).glob('image_radial_correction'))
+        s3_path_rc = f"s3://aind-open-data/{name}/image_radial_correction/"
+        rc_data_folder_list = list_zarr_tiles_from_s3(s3_path_rc)
+
+        #check that there are tiles to work on
         if len(rc_data_folder_list)!=0:
-            rc_data_folder = rc_data_folder_list[0]
-            calc_affine(rc_data_folder)
-            apply_affine_to_tiles(rc_data_folder, scratch_root, out_dir)
+            calc_affine(s3_path_rc)
+            apply_affine_to_tiles(s3_path_rc, scratch_root, out_dir)
             LOGGER.info('*'*50)
             LOGGER.info(f'Saving to S3 now')
             LOGGER.info('*'*50)
@@ -56,10 +60,10 @@ def main(args):
             #list_data_directory('/scratch/')
             resolution_zyx = get_resolution_zyx(name)
             save_corrected_tiles_to_s3(out_dir, s3_path, resolution_zyx)
-            #LOGGER.info('*'*50)
-            #LOGGER.info(f'Making QC Figures now ')
-            #LOGGER.info('*'*50)
-            #make_and_save_qc_plots(rc_root_path, out_dir)
+            LOGGER.info('*'*50)
+            LOGGER.info(f'Making QC Figures now ')
+            LOGGER.info('*'*50)
+            make_and_save_qc_plots(rc_root_path, out_dir)
         else:
             print(f'no radial_correction_temp')
         

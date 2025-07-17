@@ -18,6 +18,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 from co_api import list_data_directory
+from utils import (
+    list_zarr_tiles_from_s3,
+)
 
 nodes = cpu_count()-1
 dot_num, dot_threshold, min_sample = 10000, 10, 5
@@ -61,6 +64,8 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
     print(f'pairs of channels = {pairs_of_channels}')
 
     list_of_tiles = list(glob(f'{root}/*.zarr'))
+    if len(list_of_tiles)==0: 
+        list_of_tiles = list_zarr_tiles_from_s3(root)
     tile_number_dict = create_tile_number_dict(list_of_tiles)
     max_pos = max(tile_number_dict.values()) 
 
@@ -421,7 +426,21 @@ def get_digit_from_channel_wavelength(wavelength):
 
 def get_list_of_channels(data_loc):
     list_of_tiles = list(glob(f'{data_loc}/*.zarr'))
+
+    if "s3" in data_loc:
+        return get_list_of_channels_s3(data_loc)
     
+    # find unique channels in the list of tiles
+    channels = []
+    for tile in list_of_tiles:
+        #form is tile_x_0000_y_0000_z_0000_ch_405.zarr
+        channel = tile.split('_')[-1].split('.')[0]
+        if channel not in channels:
+            channels.append(channel)    
+    return channels
+
+def get_list_of_channels_s3(data_loc):
+    list_of_tiles = list_zarr_tiles_from_s3(data_loc)
     # find unique channels in the list of tiles
     channels = []
     for tile in list_of_tiles:
