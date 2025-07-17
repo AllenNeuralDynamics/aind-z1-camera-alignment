@@ -26,6 +26,7 @@ import pathlib
 logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M")
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
+CAMERA_CORRECTED_S3_FOLDER_NAME="image_camera_alignment"
 
 def main(args):
     if args['pipeline']: 
@@ -51,7 +52,7 @@ def main(args):
             LOGGER.info('*'*50)
             LOGGER.info(f'Saving to S3 now')
             LOGGER.info('*'*50)
-            s3_path = f's3://{s3_bucket}/{name}/corrected'
+            s3_path = f's3://{s3_bucket}/{name}/{CAMERA_CORRECTED_S3_FOLDER_NAME}'
             #list_data_directory('/scratch/')
             resolution_zyx = get_resolution_zyx(name)
             save_corrected_tiles_to_s3(out_dir, s3_path, resolution_zyx)
@@ -102,7 +103,7 @@ def main(args):
             LOGGER.info('*'*50)
             LOGGER.info(f'Saving to S3 now')
             LOGGER.info('*'*50)
-            s3_path = f's3://{s3_bucket}/{name}/corrected'
+            s3_path = f's3://{s3_bucket}/{name}/{CAMERA_CORRECTED_S3_FOLDER_NAME}'
             #list_data_directory('/scratch/')
             resolution_zyx = get_resolution_zyx(name)
             save_corrected_tiles_to_s3(out_dir, s3_path, resolution_zyx)
@@ -118,7 +119,7 @@ def main(args):
             LOGGER.info(f'Making QC Figures now ')
             LOGGER.info('*'*50)
             make_and_save_qc_plots(backup_name, out_dir)
-            s3_path = f's3://{s3_bucket}/{name}/corrected'
+            s3_path = f's3://{s3_bucket}/{name}/{CAMERA_CORRECTED_S3_FOLDER_NAME}'
             
             resolution_zyx = get_resolution_zyx(name)
 
@@ -161,7 +162,7 @@ def debug():
         LOGGER.info(f'Making QC Figures now ')
         LOGGER.info('*'*50)
         make_and_save_qc_plots(backup_name, out_dir)
-    s3_path = f's3://{s3_bucket}/{name}/corrected'
+    s3_path = f's3://{s3_bucket}/{name}/{CAMERA_CORRECTED_S3_FOLDER_NAME}'
     
     resolution_zyx = get_resolution_zyx(name)
 

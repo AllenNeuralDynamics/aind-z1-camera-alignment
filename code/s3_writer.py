@@ -47,21 +47,10 @@ def get_resolution_zyx(dataset_path):
         if not Path(acq_json_path).exists():
             acq_json_path = '/data/'+ "acquisition.json"
             assert Path(acq_json_path).exists()
-        with open(acq_json_path, 'r') as file:
+        with open(acq_json_path, 'r', encoding='utf-8') as file:
             data = json.load(file)
         
-        # Get the first tile
-        first_tile = data['tiles'][0]
-        
-        # Extract the scale from coordinate_transformations
-        for transformation in first_tile['coordinate_transformations']:
-            if transformation['type'] == 'scale':
-                resolution_xyz =  transformation['scale']
-                resolution_zyx = [float(i*1e6) for i in resolution_xyz]
-                resolution_zyx.reverse()
-                return resolution_zyx
-            # If no scale found, return None
-        return None
+        return _get_voxel_resolution_schema_2(data)
     except: 
             #use xml
         xml_list = list(glob(f'/data/{dataset_path}/*.xml'))
@@ -76,6 +65,39 @@ def get_resolution_zyx(dataset_path):
         zyx_voxelsize_list.reverse() # does in place
         voxel_float_zyx = [float(i) for i in zyx_voxelsize_list]
         return voxel_float_zyx
+
+def _get_voxel_resolution_schema_2(
+        acquisition_config,
+    ) -> list[float]:
+        """Get the voxel resolution from an acquisition.json file
+        for aind-data-schema==2.0.0"""
+
+        # Grabbing a tile with metadata from acquisition - we assume all
+        # dataset was acquired with the same resolution
+        try:
+            data_stream = acquisition_config.get("data_streams", [])[0]
+            configuration = data_stream.get("configurations", [])[0]
+            image = configuration.get("images", [])[0]
+            image_to_acquisition_transform = image[
+                "image_to_acquisition_transform"
+            ]
+        except (IndexError, AttributeError, KeyError) as e:
+            raise ValueError(
+                "acquisition_config structure is invalid or missing "
+                "required fields"
+            ) from e
+
+        scale_transform = [
+            x["scale"]
+            for x in image_to_acquisition_transform
+            if x["object_type"] == "Scale"
+        ][0]
+
+        x = float(scale_transform[0])
+        y = float(scale_transform[1])
+        z = float(scale_transform[2])
+
+        return [z, y, x]
 
 def ensure_array_5d(
     arr: Union[np.ndarray, da.Array]
