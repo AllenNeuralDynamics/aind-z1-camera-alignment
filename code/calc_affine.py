@@ -24,7 +24,7 @@ dot_num, dot_threshold, min_sample = 10000, 10, 5
 FRACTION_OF_DOTS_PER_PLANE_THRESHOLD = 0.4
 thickness, spacing = 20, 4
 max_tiles = 20
-pyramid_level = ''
+pyramid_level = '0'
 
 def save_tile_metrics(metrics_dict, results_root):
     """Save the metrics dictionary to a JSON file"""
@@ -74,13 +74,14 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
 
     # Load image data and track tile information
     for fn in list_of_tiles:
-        cam = bn(fn.split(".")[2]).split('_')[-1]
+        #change the logic for tilename paths
+        cam = bn(fn.split(".")[0]).split('_')[-1]
         if len(cam)!= 3:
             cam = get_channel_wavelength_from_single_channel_digit(cam)
         if cam not in keep_cam: continue
 
-        z = da.from_zarr(fn, pyramid_level).shape[0]
-        pixels = da.from_zarr(fn, pyramid_level).shape[1]
+        z = da.from_zarr(fn, pyramid_level).shape[2]
+        pixels = da.from_zarr(fn, pyramid_level).shape[3]
 
         if cam not in Is: 
             Is[cam] = []
@@ -90,7 +91,7 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
         coords = Path(fn).stem[0:25]
         
         # Store image data and corresponding tile info
-        Is[cam].append(da.from_zarr(fn, pyramid_level)[list(range((z-thickness)//2, (z+thickness)//2, spacing)),...])
+        Is[cam].append(da.from_zarr(fn, pyramid_level)[0,0,list(range((z-thickness)//2, (z+thickness)//2, spacing)),...])
         tile_info[cam].append(coords)
 
     # Process images to get points while maintaining tile association

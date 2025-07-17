@@ -5,6 +5,7 @@ import os
 from typing import List, Dict, Any
 import json
 import s3fs
+import glob
 
 
 # Set up logging
@@ -55,19 +56,19 @@ def load_data_description() -> str:
     RuntimeError
         If error occurs while loading or parsing the JSON configuration
     """
-    base_data_dir = pathlib.Path("../data")
+    base_data_dir = pathlib.Path("/data")
     
     # Use glob to search for data_description.json in all possible locations
     search_patterns = [
         base_data_dir / "output_aind_metadata" / "data_description.json",
         base_data_dir / "data_description.json",
-        *base_data_dir.glob("*/data_description.json")  # Any subdirectory
+        glob.glob(f"{base_data_dir.as_posix()}/*/data_description.json")[0]  # Any subdirectory
     ]
     
     # Find the first existing file
     json_file_path = None
     for json_path in search_patterns:
-        if json_path.exists():
+        if pathlib.Path(json_path).exists():
             json_file_path = json_path
             logger.info(f"Found data_description.json at: {json_file_path}")
             break
@@ -132,26 +133,24 @@ def process_zarr_datasets():
         "bucket": "aind-open-data",
         "s3_bucket": "aind-open-data",
         "z_correct": False,  # Default to 2D correction
-        "pipeline": True,  # Always use pipeline mode for S3 data
+        "pipeline": False,  # Always use pipeline mode for S3 data
         "s3_zarr_path": s3_path,  # Pass S3 path for zarr tiles
     }
     
-    try:
-        # Run 2D camera correction
-        run_2d_camera_correction(args)
+
+    # Run 2D camera correction
+    run_2d_camera_correction(args)
+    
+    # Record successful processing
+    with open(results_dir / "processing_complete.txt", "w") as f:
+        f.write(f"Successfully processed {dataset_name}\n")
+        f.write(f"S3 zarr path: {s3_path}\n")
+        f.write(f"Number of tiles processed: {len(zarr_tiles)}\n\n")
+    
+    logger.info(f"Successfully completed processing for {dataset_name}")
+    return True
         
-        # Record successful processing
-        with open(results_dir / "processing_complete.txt", "w") as f:
-            f.write(f"Successfully processed {dataset_name}\n")
-            f.write(f"S3 zarr path: {s3_path}\n")
-            f.write(f"Number of tiles processed: {len(zarr_tiles)}\n\n")
-        
-        logger.info(f"Successfully completed processing for {dataset_name}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error during camera correction processing: {str(e)}")
-        return False
+
 
 def list_zarr_tiles_from_s3(s3_path: str) -> List[str]:
     """

@@ -1,4 +1,4 @@
-# hash:sha256:79a4445349c8934420ea546633941eb240894d9e96ab61e55c206dda92c31be3
+# hash:sha256:9add57da85045b0ff36310943919ba593d8330f1ae15ab6ff1b5ad0b3943655e
 ARG REGISTRY_HOST
 FROM $REGISTRY_HOST/codeocean/lightning-jupyterlab-py39:1.0
 
@@ -26,3 +26,17 @@ RUN pip install -U --no-cache-dir \
     seaborn==0.13.2 \
     tifffile==2023.7.10 \
     zarr==2.16.0
+
+ADD "https://github.com/coder/code-server/releases/download/v4.95.3/code-server-4.95.3-linux-amd64.tar.gz" /.code-server/code-server.tar.gz
+	
+RUN cd /.code-server \
+    && tar -xvf code-server.tar.gz \
+    && rm code-server.tar.gz \
+    && ln -s /.code-server/code-server-4.95.3-linux-amd64/bin/code-server  /usr/bin/code-server
+
+RUN mkdir -p /.vscode/extensions \
+    && code-server --extensions-dir="/.vscode/extensions" --install-extension continue.continue \
+    && code-server --extensions-dir="/.vscode/extensions" --install-extension ms-python.python \
+    && code-server --extensions-dir="/.vscode/extensions" --install-extension ms-toolsai.jupyter \
+    && code-server --extensions-dir="/.vscode/extensions" --install-extension reageyao.bioSyntax \
+    && code-server --extensions-dir="/.vscode/extensions" --install-extension saoudrizwan.claude-dev

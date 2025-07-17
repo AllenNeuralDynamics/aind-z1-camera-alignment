@@ -43,7 +43,7 @@ def main(args):
 
         #TODO add failsafe code that submits calc_affine() with the path to the folder radial_correction_temp, which contains the zarr files to do camera_alignment on
         
-        rc_data_folder_list = list(Path(data_folder).glob('radial_correction_temp.ome.zarr'))
+        rc_data_folder_list = list(Path(data_folder).glob('image_radial_correction'))
         if len(rc_data_folder_list)!=0:
             rc_data_folder = rc_data_folder_list[0]
             calc_affine(rc_data_folder)
@@ -86,9 +86,9 @@ def main(args):
         print(f'bu name{backup_name}')
 
 
-        rc_root_list = list(Path('/data/').glob('radial_correction.ome.zarr'))
+        rc_root_list = list(Path('/data/').glob('image_radial_correction'))
         if len(rc_root_list)==0:
-            rc_root_list = list(Path('/data/').joinpath(name).glob('radial_correction.ome.zarr'))
+            rc_root_list = list(Path('/data/').joinpath(name).glob('image_radial_correction'))
             print(f'running capsule version')
         else: 
             print(f'running pipeline version')
@@ -234,7 +234,7 @@ def apply_affine_to_tiles(root, scratch_root, out_dir):
         
     affine = scratch_root + 'updated.M.txt'
     with open(affine) as f: Ms = {x[0]: list(map(float, x[1:])) for x in csv.reader(f, dialect='excel-tab')}
-
+    prefix = '0'
 
     #list of tiles
     list_of_tiles = list(glob(f'{root}/*.zarr'))
@@ -242,8 +242,8 @@ def apply_affine_to_tiles(root, scratch_root, out_dir):
 
     for fn in list_of_tiles:
         LOGGER.info(f"Processing {fn}")
-        zarr_array = da.from_zarr(fn)
-        z, y, x = zarr_array.shape
+        zarr_array = da.from_zarr(fn, prefix)
+        _,_, z, y, x = zarr_array.shape
         z_chunk = min(50, z)  # Ensure z_chunk doesn't exceed total z
 
         fn_channel = get_channel_from_fn(fn)
@@ -254,14 +254,14 @@ def apply_affine_to_tiles(root, scratch_root, out_dir):
         if fn_channel == "405" or fn_channel not in Ms.keys():
             # For channel 405, just copy the data
             for i in range(0, z, z_chunk):
-                chunk = zarr_array[i:i+z_chunk].compute()
+                chunk = zarr_array[0,0,i:i+z_chunk].compute()
                 out_zarr[i:i+z_chunk] = chunk
         else:
             aff = Ms[fn_channel]
             aff = cupy.array([[aff[4], aff[3], aff[5]], [aff[1], aff[0], aff[2]]]).reshape((2,3))
 
             for i in range(0, z, z_chunk):
-                chunk = zarr_array[i:i+z_chunk].compute()
+                chunk = zarr_array[0,0,i:i+z_chunk].compute()
                 transformed_chunk = process_chunk(chunk, aff)
                 out_zarr[i:i+z_chunk] = transformed_chunk
 
