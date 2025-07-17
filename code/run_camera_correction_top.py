@@ -56,7 +56,7 @@ def load_data_description() -> str:
     RuntimeError
         If error occurs while loading or parsing the JSON configuration
     """
-    base_data_dir = pathlib.Path("/data")
+    base_data_dir = pathlib.Path("../data")
     
     # Use glob to search for data_description.json in all possible locations
     search_patterns = [
