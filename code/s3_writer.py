@@ -36,6 +36,7 @@ def save_corrected_tiles_to_s3(corrected_scratch_dir, s3_path, resolution_zyx):
     list_of_tiles = list(glob(f'{corrected_scratch_dir}/*.zarr'))
     LOGGER.info(f'Saving tiles now!')
     for tilename in list_of_tiles:
+        LOGGER.INFO(f'saving {tilename}.... ')
         output_path = s3_path + tilename
         save_tile(tilename, output_path, resolution_zyx, num_cpus)
 
