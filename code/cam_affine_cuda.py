@@ -60,10 +60,10 @@ def main(args):
             #list_data_directory('/scratch/')
             resolution_zyx = get_resolution_zyx(name)
             save_corrected_tiles_to_s3(out_dir, s3_path, resolution_zyx)
-            LOGGER.info('*'*50)
-            LOGGER.info(f'Making QC Figures now ')
-            LOGGER.info('*'*50)
-            make_and_save_qc_plots(rc_root_path, out_dir)
+            # LOGGER.info('*'*50)
+            # LOGGER.info(f'Making QC Figures now ')
+            # LOGGER.info('*'*50)
+            # make_and_save_qc_plots(rc_root_path, out_dir)
         else:
             print(f'no radial_correction_temp')
         
