@@ -36,7 +36,7 @@ def save_corrected_tiles_to_s3(corrected_scratch_dir, s3_path, resolution_zyx):
     list_of_tiles = list(glob(f'{corrected_scratch_dir}/*.zarr'))
     LOGGER.info(f'Saving tiles now!')
     for tilename in list_of_tiles:
-        LOGGER.INFO(f'saving {tilename}.... ')
+        LOGGER.info(f'saving {tilename}.... ')
         output_path = s3_path + tilename
         save_tile(tilename, output_path, resolution_zyx, num_cpus)
 
@@ -203,7 +203,7 @@ def save_tile(dataset_loc, output_path, resolution_zyx, num_cpus):
     )
 
     split_out = output_path.split('/')
-    ome_path = 's3://'+split_out[2]+'/' + split_out[3] + '/'+split_out[4]+'.ome.zarr'
+    ome_path = 's3://'+split_out[2]+'/' + split_out[3] + '/'+split_out[4]
     
     store = s3fs.S3Map(root=ome_path, s3=s3, check=False)
     root_group = zarr.group(store=store, overwrite=False)
