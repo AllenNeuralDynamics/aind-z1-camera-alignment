@@ -46,6 +46,8 @@ def get_resolution_zyx(dataset_path):
         acq_json_path = '/data/'+dataset_path + "/acquisition.json"
         if not Path(acq_json_path).exists():
             acq_json_path = '/data/'+ "acquisition.json"
+            if not Path(acq_json_path).exists(): 
+                acq_json_path = f'/data/output_aind_metadata/acquisition.json''
             assert Path(acq_json_path).exists()
         with open(acq_json_path, 'r', encoding='utf-8') as file:
             data = json.load(file)
