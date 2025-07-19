@@ -243,6 +243,8 @@ def apply_affine_to_tiles(root, scratch_root, out_dir):
 
     #list of tiles
     list_of_tiles = list(glob(f'{root}/*.zarr'))
+    if len(list_of_tiles)==0:
+        list_of_tiles = list_zarr_tiles_from_s3(root)
 
 
     for fn in list_of_tiles:
