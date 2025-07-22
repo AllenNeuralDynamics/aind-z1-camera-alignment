@@ -25,7 +25,9 @@ RUN pip install -U --no-cache-dir \
     scikit-image==0.21.0 \
     seaborn==0.13.2 \
     tifffile==2023.7.10 \
-    zarr==2.16.0
+    zarr==2.16.0 \ 
+    xmltodict==0.13.0
+
 
 ADD "https://github.com/coder/code-server/releases/download/v4.95.3/code-server-4.95.3-linux-amd64.tar.gz" /.code-server/code-server.tar.gz
 	
