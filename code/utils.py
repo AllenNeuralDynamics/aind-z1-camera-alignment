@@ -5,6 +5,9 @@ import json
 import glob
 import pathlib
 import logging
+import xmltodict
+import xml.etree.ElementTree as ET
+from collections import OrderedDict
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -158,3 +161,342 @@ def list_zarr_tiles_from_s3(s3_path: str) -> List[str]:
         
     except Exception as e:
         raise RuntimeError(f"Error listing zarr tiles from S3: {str(e)}")
+
+#utility to write a new affine transform to the relevant xml field: 
+
+""" The complete list of affine transforms for a tile is in the form: 
+  <ViewRegistration timepoint="0" setup="74">
+      <ViewTransform type="affine">
+        <Name>Stitching Transform</Name>
+        <affine>1.0 0.0 0.0 -7.56666561145903 0.0 1.0 0.0 5.039427221176538 0.0 0.0 1.0 3.836497927664709</affine>
+      </ViewTransform>
+      <ViewTransform type="affine">
+        <Name>Translation to Nominal Grid</Name>
+        <affine>1.0 0.0 0.0 4560.0 0.0 1.0 0.0 -3648.0 0.0 0.0 1.0 0.0</affine>
+      </ViewTransform>
+    </ViewRegistration>
+
+Therefore we need the following: 
+
+1. A utility that gets setup_id from "tilename" 
+    DONE: get_tile_id_from_name()
+2. A utility that finds the correct ViewRegistration given the setup_id
+    DONE? get_tile_transform_given_tilename()
+3. A utility that adds the new affine transform to the top of the stack, 
+    including writing/saving the xml. 
+
+4. A utility that does this for all tiles (all channels). 
+
+5. modify the XML dataset path to point to 'image_camera_alignment'
+
+6. A utility to convert a 6x1 2D affine array to a 12x1 3D affine array 
+    Done: convert_2D_affine_to_3D_affine
+
+"""
+
+
+
+def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str): 
+    """
+    Add a camera alignment affine transform to a specific tile in the XML file.
+    
+    Parameters
+    ----------
+    xml_path : str
+        Path to the input XML file
+    channel_affine : list
+        2D affine transform as a list of 6 values
+    tilename : str
+        Name of the tile to add the transform to
+    """
+    
+    with open(xml_path, "r") as file:
+        data: OrderedDict = xmltodict.parse(file.read())
+
+    affine_3D = convert_2D_affine_to_3D_affine(channel_affine)
+    # Convert affine_3D to str
+    affine_3D_str = " ".join([str(i) for i in affine_3D])
+
+    tile_number = get_tile_id_from_name(data, tilename)
+
+    # Get the view registration for this tile
+    view_registration = data["SpimData"]["ViewRegistrations"]["ViewRegistration"][tile_number]
+   
+    # Create the new ViewTransform object
+    new_view_transform = OrderedDict([
+        ('@type', 'affine'),
+        ('Name', 'Camera Alignment Affine'),
+        ('affine', affine_3D_str)
+    ])
+    
+    # Handle the ViewTransform structure - it can be a single dict or a list
+    current_transforms = view_registration.get("ViewTransform", [])
+    
+    # Ensure we have a list
+    if not isinstance(current_transforms, list):
+        current_transforms = [current_transforms]
+    
+    # Insert the new transform at the beginning (highest priority)
+    current_transforms.insert(0, new_view_transform)
+    
+    # Update the view registration
+    data["SpimData"]["ViewRegistrations"]["ViewRegistration"][tile_number]["ViewTransform"] = current_transforms
+
+    # Generate output path
+    updated_xml_path = xml_path.replace('.xml', '_cam_align.xml')
+    
+    # Write the updated XML back to file
+    with open(updated_xml_path, 'w', encoding='utf-8') as f:
+        # Write XML declaration
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+        # Convert back to XML and write
+        xmltodict.unparse(data, f, pretty=True)
+    
+    logger.info(f"Updated XML saved to: {updated_xml_path}")
+    return updated_xml_path
+
+
+
+
+
+def convert_2D_affine_to_3D_affine(affine:list, dZ = 0)-> list: 
+    """
+    Converts a 2D affine to a 3D affine transform in
+    list format. 
+    2D affine has format 
+    1 0 dX
+    0 1 dY
+    0 0 1 (<- we ignore this line, it 
+            is assumed to be there)
+
+    3D affine has the format 
+    1 0 0 dX
+    0 1 0 dY
+    0 0 1 dZ
+    0 0 0 1 (<- we ignore this line too)
+
+    Parameters: 
+    -----------
+    affine: list
+        the 2D affine to be converted
+    
+    Returns: 
+    --------
+    affine_3D: list
+        3D affine to be saved to xml
+
+    """
+    (A, B, dX, D, E, dY) = affine
+
+    affine_3D = [A, B , 0, dX, D, E, 0, dY, 0, 0, 1, dZ]
+    return affine_3D
+
+
+def extract_dataset_path(xml_path: str) -> dict[int, str]:
+    """
+    Parses BDV xml and outputs map of setup_id -> tile path.
+
+    Parameters
+    ------------------------
+    xml_path: str
+        Path of xml outputted from BigStitcher.
+
+    Returns
+    ------------------------
+    dict[int, str]:
+        Dictionary of tile ids to tile paths.
+
+    """
+
+    view_paths: dict[int, str] = {}
+    with open(xml_path, "r") as file:
+        data: OrderedDict = xmltodict.parse(file.read())
+
+    dataset_path = data["SpimData"]["SequenceDescription"]["ImageLoader"]["zarr"]
+        
+
+    return dataset_path["#text"]
+
+def extract_tile_paths(xml_path: str) -> dict[int, str]:
+    """
+    Parses BDV xml and outputs map of setup_id -> tile path.
+
+    Parameters
+    ------------------------
+    xml_path: str
+        Path of xml outputted from BigStitcher.
+
+    Returns
+    ------------------------
+    dict[int, str]:
+        Dictionary of tile ids to tile paths.
+
+    """
+
+    view_paths: dict[int, str] = {}
+    with open(xml_path, "r") as file:
+        data: OrderedDict = xmltodict.parse(file.read())
+
+    if not isinstance(data["SpimData"]["SequenceDescription"]["ImageLoader"]["zgroups"][
+            "zgroup"
+        ], list):
+        view_paths = data["SpimData"]["SequenceDescription"]["ImageLoader"]["zgroups"][
+            "zgroup"
+        ]['path']
+    else:
+        for id, zgroup in enumerate(
+            data["SpimData"]["SequenceDescription"]["ImageLoader"]["zgroups"][
+                "zgroup"
+            ]
+        ):
+            view_paths[int(id)] = zgroup["path"]
+
+    return view_paths
+
+
+def extract_tile_vox_size(xml_path: str) -> tuple[float, float, float]:
+    """
+    Parses BDV xml and output 3-ple of voxel sizes: (x, y, z)
+
+    Parameters
+    ------------------------
+    xml_path: str
+        Path of xml outputted by BigStitcher.
+
+    Returns
+    ------------------------
+    tuple[float, float, float]:
+        Tuple containing voxel sizes.
+
+    """
+
+    with open(xml_path, "r") as file:
+        data: OrderedDict = xmltodict.parse(file.read())
+
+    if isinstance(data["SpimData"]["SequenceDescription"][
+        "ViewSetups"
+    ]["ViewSetup"], list):
+        first_tile_metadata = data["SpimData"]["SequenceDescription"][
+            "ViewSetups"
+        ]["ViewSetup"][0]
+    else:
+        first_tile_metadata = data["SpimData"]["SequenceDescription"][
+        "ViewSetups"
+    ]["ViewSetup"]
+    vox_sizes: str = first_tile_metadata["voxelSize"]["size"]
+    return tuple(float(val) for val in vox_sizes.split(" "))
+
+
+def extract_tile_transforms(xml_path: str) -> dict[int, list[dict]]:
+    """
+    Parses BDV xml and outputs map of setup_id -> list of transformations
+    Output dictionary maps view number to list of {'@type', 'Name', 'affine'}
+    where 'affine' contains the transform as string of 12 floats.
+
+    Matrices are listed in the order of forward execution.
+
+    Parameters
+    ------------------------
+    xml_path: str
+        Path of xml outputted by BigStitcher.
+
+    Returns
+    ------------------------
+    dict[int, list[dict]]
+        Dictionary of tile ids to transform list. List entries described above.
+
+    """
+
+    view_transforms: dict[int, list[dict]] = {}
+    with open(xml_path, "r") as file:
+        data: OrderedDict = xmltodict.parse(file.read())
+    
+    view_registration = data["SpimData"]["ViewRegistrations"]["ViewRegistration"]
+    if not isinstance(view_registration, list):
+        tfm_stack = view_registration["ViewTransform"]
+        
+        if type(tfm_stack) is not list:
+            tfm_stack = [tfm_stack]
+        view_transforms[int(view_registration["@setup"])] = tfm_stack
+    else:
+        for view_reg in view_registration:
+            tfm_stack = view_reg["ViewTransform"]
+            if type(tfm_stack) is not list:
+                tfm_stack = [tfm_stack]
+            view_transforms[int(view_reg["@setup"])] = tfm_stack
+
+    view_transforms = {
+        view: tfs[::-1] for view, tfs in view_transforms.items()
+    }
+
+    return view_transforms
+
+def get_tile_id_from_name(data:dict, tilename):
+    """
+    """
+    
+    #find viewsetup with matching tilename
+    viewsetups = data["SpimData"]["SequenceDescription"][
+            "ViewSetups"
+        ]["ViewSetup"]
+    matching_viewsetup=[v for v in viewsetups if v['name']==tilename]
+
+    #get tile_number from this viewsetup
+    matching_tile_number = matching_viewsetup[0]['attributes']['tile']
+
+    return int(matching_tile_number)
+    
+
+
+def get_tile_transform_given_tilename(xml_path: str, tilename:str):
+    """
+    """
+    with open(xml_path, "r") as file:
+        data: OrderedDict = xmltodict.parse(file.read())
+    
+    tile_number = get_tile_id_from_name(data, tilename)
+
+    #use tile_number to index view_registrations
+    view_registrations = data["SpimData"]["ViewRegistrations"]["ViewRegistration"]
+
+    view_registration = view_registrations[tile_number]
+
+    transform = view_registration['ViewTransform']['affine']
+
+    nums = [float(val) for val in transform.split(" ")]
+
+    return nums
+
+def get_channel_for_tilename(xml_path:str, tilename:str) -> int:
+    with open(xml_path, "r") as file:
+        data: OrderedDict = xmltodict.parse(file.read())
+    
+    viewsetups = data["SpimData"]["SequenceDescription"][
+            "ViewSetups"
+        ]["ViewSetup"]
+    matching_viewsetup=[v for v in viewsetups if v['name']==tilename]
+    channel = matching_viewsetup[0]['attributes']['channel']
+    return int(channel)
+
+def read_channels_from_xml(xml_path:str) -> list[int]:
+    """
+    Read the XML attribute named "channel" and return
+     a list of the names of the channels there. 
+    
+    Parameters
+    ---------
+    xml_path: str
+
+    Returns: 
+    channels: list[int]
+        Unique channels in the xml
+    """
+    with open(xml_path, "r") as file:
+        data: OrderedDict = xmltodict.parse(file.read())
+    
+    channel_attributes = data['SpimData']['SequenceDescription']['ViewSetups']['Attributes'][1]
+    if channel_attributes['@name']=='channel':
+        channels = list(set([int(i['name']) for i in channel_attributes['Channel']]))
+        return channels
+    else: 
+        return None
