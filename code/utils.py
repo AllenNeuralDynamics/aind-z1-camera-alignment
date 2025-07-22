@@ -184,8 +184,10 @@ Therefore we need the following:
     DONE? get_tile_transform_given_tilename()
 3. A utility that adds the new affine transform to the top of the stack, 
     including writing/saving the xml. 
+    DONE: add_affine_to_xml()
 
-4. A utility that does this for all tiles (all channels). 
+4. A utility that does this for all tiles (all channels).
+
 
 5. modify the XML dataset path to point to 'image_camera_alignment'
 
@@ -194,6 +196,57 @@ Therefore we need the following:
 
 """
 
+
+def add_affines_to_channel(xml_path: str, channel_affine: list, channel: str): 
+    """
+    Add a camera alignment affine transform to all tiles that belong 
+    to a channel group. 
+    
+    Parameters
+    ----------
+    xml_path : str
+        Path to the input XML file
+    channel_affine : list
+        2D affine transform as a list of 6 values
+    channel : str
+        Channel wavelength to add transforms to (will be used to find tiles)
+    
+    Returns
+    -------
+    str
+        Path to the updated XML file
+    """
+    
+    # First, parse the XML to find all tiles that belong to this channel
+    with open(xml_path, "r") as file:
+        data: OrderedDict = xmltodict.parse(file.read())
+    
+    viewsetups = data["SpimData"]["SequenceDescription"]["ViewSetups"]["ViewSetup"]
+    
+    # Handle case where ViewSetup could be a single dict or list of dicts
+    if not isinstance(viewsetups, list):
+        viewsetups = [viewsetups]
+    
+    # Find all tile names that match the specified channel
+    matching_tilenames = []
+    for viewsetup in viewsetups:
+        if str(viewsetup['attributes']['channel']) == str(channel):
+            matching_tilenames.append(viewsetup['name'])
+    
+    if not matching_tilenames:
+        logger.warning(f"No tiles found for channel {channel}")
+        return None
+    
+    logger.info(f"Found {len(matching_tilenames)} tiles for channel {channel}: {matching_tilenames}")
+    
+    # Add the affine transform to each tile in this channel
+    updated_xml_path = None
+    for tilename in matching_tilenames:
+        updated_xml_path = add_affine_to_xml(xml_path, channel_affine, tilename)
+        # Use the updated XML as input for the next iteration
+        xml_path = updated_xml_path
+    
+    return updated_xml_path
 
 
 def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str): 
