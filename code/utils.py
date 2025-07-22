@@ -198,7 +198,7 @@ Therefore we need the following:
 """
 
 
-def add_affines_to_channel(xml_path: str, channel_affine: list, channel: str): 
+def add_affines_to_channel(xml_path: str, channel_affine: list, channel: str, output_xml_path: str): 
     """
     Add a camera alignment affine transform to all tiles that belong 
     to a channel group. 
@@ -243,14 +243,14 @@ def add_affines_to_channel(xml_path: str, channel_affine: list, channel: str):
     # Add the affine transform to each tile in this channel
     updated_xml_path = None
     for tilename in matching_tilenames:
-        updated_xml_path = add_affine_to_xml(xml_path, channel_affine, tilename)
+        updated_xml_path = add_affine_to_xml(xml_path, channel_affine, tilename, output_xml_path)
         # Use the updated XML as input for the next iteration
         xml_path = updated_xml_path
     
     return updated_xml_path
 
 
-def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str): 
+def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str, output_xml_path: str = None): 
     """
     Add a camera alignment affine transform to a specific tile in the XML file.
     
@@ -297,7 +297,8 @@ def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str):
     data["SpimData"]["ViewRegistrations"]["ViewRegistration"][tile_number]["ViewTransform"] = current_transforms
 
     # Generate output path
-    updated_xml_path = xml_path.replace('.xml', '_cam_align.xml')
+    if output_xml_path == None: 
+        updated_xml_path = xml_path.replace('.xml', '_cam_align.xml')
     
     # Write the updated XML back to file
     with open(updated_xml_path, 'w', encoding='utf-8') as f:
