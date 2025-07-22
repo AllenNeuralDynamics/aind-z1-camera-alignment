@@ -46,7 +46,7 @@ class NumpyArrayEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/tile_affine_qc'):
+def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/tile_affine_qc', reference_channel = None):
     Path(qc_root).mkdir(exist_ok=True)
     list_of_channels = get_list_of_channels(root)
     #print(f'list of channels {list_of_channels}')
@@ -57,7 +57,22 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
     if '405' in list_of_channels:
         list_of_channels.remove('405')
 
-    pairs_of_channels = make_pairs_of_channels(list_of_channels)
+    # Determine reference channel
+    if reference_channel is None:
+        # Default behavior: use longest wavelength (current behavior)
+        sorted_channels = sorted(list_of_channels)
+        reference_channel = sorted_channels[-1]
+        print(f"No reference channel specified. Using default: {reference_channel}")
+    elif reference_channel not in list_of_channels:
+        raise ValueError(f"Reference channel '{reference_channel}' not found in available channels: {list_of_channels}")
+    
+    print(f"Using reference channel: {reference_channel}")
+
+    # Create pairs of channels with reference channel consideration
+    pairs_of_channels = make_pairs_of_channels_with_reference(list_of_channels, reference_channel)
+    bu_pairs_of_channels = make_pairs_of_channels(list_of_channels)
+    assert pairs_of_channels == bu_pairs_of_channels
+
     keep_cam = {x:'' for x in sum(pairs_of_channels, [])}
     
     pairs_of_channels.reverse()
@@ -377,6 +392,63 @@ def make_pairs_of_channels(channels):
         
     return pairs
 
+def make_pairs_of_channels_with_reference(channels, reference_channel):
+    """
+    Creates pairs of channels to align, ensuring the reference channel never gets a transform.
+    
+    The strategy is to create a spanning tree with the reference channel as the root,
+    where each non-reference channel is paired with a channel that's already aligned
+    (or the reference channel itself).
+    
+    Args:
+        channels (list): list of channels in the dataset
+        reference_channel (str): channel to use as reference (no transforms)
+         
+    Returns:
+        list: list of pairs of channels to align, ordered such that reference channel
+              never gets a transform applied
+    """
+    if reference_channel not in channels:
+        raise ValueError(f"Reference channel '{reference_channel}' not found in channels: {channels}")
+    
+    # Sort channels for consistent behavior
+    sorted_channels = sorted(channels)
+    
+    # Remove reference channel from the list of channels that need transforms
+    other_channels = [ch for ch in sorted_channels if ch != reference_channel]
+    
+    if len(other_channels) == 0:
+        return []  # Only one channel, no pairs needed
+    
+    pairs = []
+    aligned_channels = {reference_channel}  # Start with reference channel as "aligned"
+    
+    # For each channel that needs alignment, pair it with the closest aligned channel
+    while other_channels:
+        best_pair = None
+        best_distance = float('inf')
+        
+        # Find the best channel to align next (closest to an already aligned channel)
+        for unaligned_ch in other_channels:
+            for aligned_ch in aligned_channels:
+                # Use wavelength distance as a heuristic for spectral similarity
+                distance = abs(int(unaligned_ch) - int(aligned_ch))
+                if distance < best_distance:
+                    best_distance = distance
+                    best_pair = (unaligned_ch, aligned_ch)
+        
+        if best_pair:
+            unaligned_ch, aligned_ch = best_pair
+            pairs.append([unaligned_ch, aligned_ch])  # Order: [channel_to_transform, reference_channel]
+            aligned_channels.add(unaligned_ch)
+            other_channels.remove(unaligned_ch)
+        else:
+            # Fallback: just pair with reference channel
+            ch = other_channels.pop(0)
+            pairs.append([ch, reference_channel])
+            aligned_channels.add(ch)
+    
+    return pairs
 
 def create_tile_number_dict(tilenames: list) -> dict:
     """
