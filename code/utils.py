@@ -187,9 +187,10 @@ Therefore we need the following:
     DONE: add_affine_to_xml()
 
 4. A utility that does this for all tiles (all channels).
-
+    DONE: add_affines_to_channel()
 
 5. modify the XML dataset path to point to 'image_camera_alignment'
+    DONE: update_xml_path_to_camera_alignment()
 
 6. A utility to convert a 6x1 2D affine array to a 12x1 3D affine array 
     Done: convert_2D_affine_to_3D_affine
@@ -309,7 +310,51 @@ def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str):
     return updated_xml_path
 
 
+def update_xml_path_to_camera_alignment(xml_path: str, output_xml_path = None): 
+    """
+    Update the data pointer to 'image_camera_alignment'
+    
+    Parameters
+    ----------
+    xml_path : str
+        Path to the input XML file
+    output_xml_path : str, optional
+        Path for the output XML file. If None, will append '_camera_alignment' to input filename
+        
+    Returns
+    -------
+    str
+        Path to the updated XML file
+    
+    """
+    with open(xml_path, "r") as file:
+        data: OrderedDict = xmltodict.parse(file.read())
 
+    dataset_path = data["SpimData"]["SequenceDescription"]["ImageLoader"]["zarr"]
+    if 'SPIM' in dataset_path:
+        updated_path = dataset_path.replace('SPIM', 'image_camera_alignment')
+    elif 'image_radial_correction' in dataset_path: 
+        updated_path = dataset_path.replace('image_radial_correction', 'image_camera_alignment') 
+    else: 
+        logger.warning(f"No SPIM found in path, appending: {dataset_path} -> {updated_path}")
+        updated_path = dataset_path + '/image_camera_alignment/'
+    
+    # Update the XML data
+    data["SpimData"]["SequenceDescription"]["ImageLoader"]["zarr"]["#text"] = updated_path
+    
+    logger.info(f"Updated dataset path: {updated_path}")
+    
+    # Generate output path if not provided
+    if output_xml_path is None:
+        output_xml_path = xml_path.replace('.xml', '_camera_alignment.xml')
+    
+    # Write the updated XML
+    with open(output_xml_path, 'w', encoding='utf-8') as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+        xmltodict.unparse(data, f, pretty=True)
+    
+    logger.info(f"Updated XML with camera alignment path saved to: {output_xml_path}")
+    return output_xml_path  
 
 
 def convert_2D_affine_to_3D_affine(affine:list, dZ = 0)-> list: 
