@@ -15,21 +15,21 @@ from calc_affine import calc_affine, get_channel_wavelength_from_single_channel_
 from qc_results import make_and_save_qc_plots
 
 import logging
-from s3_writer import save_tile, get_resolution_zyx, save_corrected_tiles_to_s3
+from s3_writer import save_tile, get_resolution_zyx, save_corrected_tiles_to_s3, copy_file_to_s3
 from co_api import list_data_directory
 from typing import List, Dict, Any
 import pathlib
 from utils import (
     list_zarr_tiles_from_s3,
+    add_affines_to_channel, 
 )
-
-
 
 
 logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M")
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 CAMERA_CORRECTED_S3_FOLDER_NAME="image_camera_alignment"
+TILE_ALIGNMENT_S3_FOLDER_NAME = "image_tile_alignment"
 
 def main(args):
     if args['pipeline']: 
@@ -48,18 +48,23 @@ def main(args):
         #TODO add failsafe code that submits calc_affine() with the path to the folder radial_correction_temp, which contains the zarr files to do camera_alignment on
         s3_path_rc = f"s3://aind-open-data/{name}/image_radial_correction/"
         rc_data_folder_list = list_zarr_tiles_from_s3(s3_path_rc)
+        xml_path = data_folder + 'stitching_rc_spot_channels.xml'
+        assert Path(xml_path).exists()
 
         #check that there are tiles to work on
         if len(rc_data_folder_list)!=0:
             calc_affine(s3_path_rc)
-            apply_affine_to_tiles(s3_path_rc, scratch_root, out_dir)
+            
+            updated_xml_path = apply_affine_to_xml(root, scratch_root, xml_path = xml_path)
+            # apply_affine_to_tiles(s3_path_rc, scratch_root, out_dir)
             LOGGER.info('*'*50)
             LOGGER.info(f'Saving to S3 now')
             LOGGER.info('*'*50)
-            s3_path = f's3://{s3_bucket}/{name}/{CAMERA_CORRECTED_S3_FOLDER_NAME}'
+            s3_path = f's3://{s3_bucket}/{name}/{TILE_ALIGNMENT_S3_FOLDER_NAME}/{Path(updated_xml_path).name}'
+            copy_file_to_s3(updated_xml_path, s3_path)
             #list_data_directory('/scratch/')
-            resolution_zyx = get_resolution_zyx(name)
-            save_corrected_tiles_to_s3(out_dir, s3_path, resolution_zyx)
+            # resolution_zyx = get_resolution_zyx(name)
+            # save_corrected_tiles_to_s3(out_dir, s3_path, resolution_zyx)
             # LOGGER.info('*'*50)
             # LOGGER.info(f'Making QC Figures now ')
             # LOGGER.info('*'*50)
@@ -231,6 +236,26 @@ def process_chunk(chunk, aff):
 
 def get_channel_from_fn(fn):
     return fn.split('_')[-1].split('.')[0]
+
+def apply_affine_to_xml(root, scratch_root, xml_path = None): 
+    """Reads the affine transforms from file 
+    and appends it to the relevant xml. 
+    
+
+    """
+    affine_path = scratch_root + 'updated.M.txt'
+    with open(affine_path) as f: affine_dict = {x[0]: list(map(float, x[1:])) for x in csv.reader(f, dialect='excel-tab')}
+    if xml_path == None: 
+        xml_path = root + 'image_tile_alignment/stitching_rc_spot_channels.xml'
+
+    for channel in affine_dict.keys(): 
+        affine = affine_dict[channel]
+        updated_xml_path = add_affines_to_channel(xml_path, affine, channel)
+        xml_path = updated_xml_path
+        LOGGER.info(f"Finished processing channel {channel}")
+
+    return updated_xml_path
+
 
 def apply_affine_to_tiles(root, scratch_root, out_dir):
     """Reads the affine from file and applies it to each tile in the dataset
