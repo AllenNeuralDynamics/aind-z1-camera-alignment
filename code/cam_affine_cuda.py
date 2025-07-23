@@ -22,6 +22,7 @@ import pathlib
 from utils import (
     list_zarr_tiles_from_s3,
     add_affines_to_channel, 
+    update_xml_path_to_camera_alignment
 )
 
 
