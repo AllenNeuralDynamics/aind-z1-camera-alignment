@@ -55,7 +55,7 @@ def main(args):
         if len(rc_data_folder_list)!=0:
             calc_affine(s3_path_rc)
             
-            updated_xml_path = apply_affine_to_xml(root, scratch_root, xml_path = xml_path)
+            updated_xml_path = apply_affine_to_xml(data_folder, scratch_root, xml_path = xml_path)
             # apply_affine_to_tiles(s3_path_rc, scratch_root, out_dir)
             LOGGER.info('*'*50)
             LOGGER.info(f'Saving to S3 now')
