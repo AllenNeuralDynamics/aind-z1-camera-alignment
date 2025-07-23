@@ -7,10 +7,74 @@ import pathlib
 import logging
 import xmltodict
 from collections import OrderedDict
+import shutil
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def copy_file(file_path: str, out_path: str) -> str:
+    """
+    Copy a file from source path to destination path.
+    
+    Copies a file from the source location (typically '/scratch/') to the 
+    destination location (typically '/results/'). Creates destination 
+    directories if they don't exist.
+    
+    Parameters
+    ----------
+    file_path : str
+        Source file path to copy from
+    out_path : str
+        Destination file path to copy to
+        
+    Returns
+    -------
+    str
+        Path to the copied file
+        
+    Raises
+    ------
+    FileNotFoundError
+        If the source file does not exist
+    PermissionError
+        If there are insufficient permissions to read source or write destination
+    OSError
+        If there are other OS-level errors during the copy operation
+        
+    Notes
+    -----
+    This function will:
+    - Create destination directories if they don't exist
+    - Preserve file metadata (timestamps, permissions) when possible
+    - Overwrite destination file if it already exists
+    
+    Examples
+    --------
+    >>> copy_file('/scratch/results.json', '/results/final_results.json')
+    '/results/final_results.json'
+    """
+    try:
+        # Convert to pathlib.Path objects for easier manipulation
+        source_path = pathlib.Path(file_path)
+        dest_path = pathlib.Path(out_path)
+        
+        # Check if source file exists
+        if not source_path.exists():
+            raise FileNotFoundError(f"Source file does not exist: {file_path}")
+        
+        # Create destination directory if it doesn't exist
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Copy the file
+        shutil.copy2(source_path, dest_path)
+        
+        logger.info(f"Successfully copied file from {file_path} to {out_path}")
+        return str(dest_path)
+        
+    except Exception as e:
+        logger.error(f"Error copying file from {file_path} to {out_path}: {str(e)}")
+        raise
 
 def find_zarr_datasets() -> List[pathlib.Path]:
     """
