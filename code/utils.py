@@ -359,7 +359,6 @@ def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str, output
     # Write the updated XML back to file
     with open(output_xml_path, 'w', encoding='utf-8') as f:
         # Write XML declaration
-        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
         # Convert back to XML and write
         xmltodict.unparse(data, f, pretty=True)
     

@@ -21,6 +21,7 @@ from pathlib import Path
 import json
 from xml.etree import ElementTree as ET
 from glob import glob
+import pathlib
 
 
 logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M")
@@ -154,32 +155,32 @@ def _get_voxel_resolution_schema_2(
     Looks for Scale transform in the first data stream configuration.
     """
 
-        # Grabbing a tile with metadata from acquisition - we assume all
-        # dataset was acquired with the same resolution
-        try:
-            data_stream = acquisition_config.get("data_streams", [])[0]
-            configuration = data_stream.get("configurations", [])[0]
-            image = configuration.get("images", [])[0]
-            image_to_acquisition_transform = image[
-                "image_to_acquisition_transform"
-            ]
-        except (IndexError, AttributeError, KeyError) as e:
-            raise ValueError(
-                "acquisition_config structure is invalid or missing "
-                "required fields"
-            ) from e
+    # Grabbing a tile with metadata from acquisition - we assume all
+    # dataset was acquired with the same resolution
+    try:
+        data_stream = acquisition_config.get("data_streams", [])[0]
+        configuration = data_stream.get("configurations", [])[0]
+        image = configuration.get("images", [])[0]
+        image_to_acquisition_transform = image[
+            "image_to_acquisition_transform"
+        ]
+    except (IndexError, AttributeError, KeyError) as e:
+        raise ValueError(
+            "acquisition_config structure is invalid or missing "
+            "required fields"
+        ) from e
 
-        scale_transform = [
-            x["scale"]
-            for x in image_to_acquisition_transform
-            if x["object_type"] == "Scale"
-        ][0]
+    scale_transform = [
+        x["scale"]
+        for x in image_to_acquisition_transform
+        if x["object_type"] == "Scale"
+    ][0]
 
-        x = float(scale_transform[0])
-        y = float(scale_transform[1])
-        z = float(scale_transform[2])
+    x = float(scale_transform[0])
+    y = float(scale_transform[1])
+    z = float(scale_transform[2])
 
-        return [z, y, x]
+    return [z, y, x]
 
 def ensure_array_5d(
     arr: Union[np.ndarray, da.Array]
@@ -374,7 +375,8 @@ def copy_file_to_s3(file_path: str, s3_location: str) -> bool:
     # Normalize S3 location - remove s3:// prefix if present
     s3_path_clean = s3_location.replace('s3://', '') if s3_location.startswith('s3://') else s3_location
     
-    logger.info(f"Copying {file_path} to s3://{s3_path_clean}")
+    LOGGER.info(f"Copying {file_path} to s3://{s3_path_clean}")
+    num_cpus = 14
     
     try:
         # Initialize S3 filesystem
@@ -396,10 +398,10 @@ def copy_file_to_s3(file_path: str, s3_location: str) -> bool:
         # Verify the file was uploaded by checking if it exists
         if s3.exists(s3_path_clean):
             file_size = local_path.stat().st_size
-            logger.info(f"Successfully uploaded {file_path} ({file_size} bytes) to s3://{s3_path_clean}")
+            LOGGER.info(f"Successfully uploaded {file_path} ({file_size} bytes) to s3://{s3_path_clean}")
             return True
         else:
-            logger.error(f"Upload verification failed for s3://{s3_path_clean}")
+            LOGGER.error(f"Upload verification failed for s3://{s3_path_clean}")
             return False
             
     except Exception as e:

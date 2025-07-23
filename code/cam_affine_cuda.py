@@ -328,7 +328,7 @@ def apply_affine_to_xml(root, scratch_root, xml_path = None):
     with open(affine_path) as f: affine_dict = {x[0]: list(map(float, x[1:])) for x in csv.reader(f, dialect='excel-tab')}
     if xml_path == None: 
         xml_path = root + 'stitching_rc_spot_channels.xml'
-    output_xml_path = '/results/stitching_cam_alignment_spot_channels.xml'
+    output_xml_path = '/scratch/stitching_cam_alignment_spot_channels.xml'
     update_xml_path_to_camera_alignment(xml_path, output_xml_path)
 
     for channel in affine_dict.keys(): 
