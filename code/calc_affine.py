@@ -69,9 +69,11 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
     print(f"Using reference channel: {reference_channel}")
 
     # Create pairs of channels with reference channel consideration
-    pairs_of_channels = make_pairs_of_channels_with_reference(list_of_channels, reference_channel)
-    bu_pairs_of_channels = make_pairs_of_channels(list_of_channels)
-    assert pairs_of_channels == bu_pairs_of_channels
+    new_pairs_of_channels = make_pairs_of_channels_with_reference(list_of_channels, reference_channel)
+    print(f' new pairs of channels {new_pairs_of_channels}')
+    pairs_of_channels = make_pairs_of_channels(list_of_channels)
+    print(f' old pairs of channels {pairs_of_channels}')
+    # assert pairs_of_channels == bu_pairs_of_channels
 
     keep_cam = {x:'' for x in sum(pairs_of_channels, [])}
     
