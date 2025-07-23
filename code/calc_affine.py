@@ -1,15 +1,10 @@
 # determine out affine transforms based on image data using ransac
-
-import tifffile as tf, numpy as np, os, sys
-import pickle
 from glob import glob
 from skimage.feature import blob_dog, match_descriptors
 from skimage.measure import ransac
 from skimage.transform import AffineTransform
 from multiprocessing import Pool, cpu_count
-# from common_func import getConfigs, root
 from os.path import basename as bn
-from ast import literal_eval
 import dask.array as da
 import json
 import numpy as np
@@ -18,7 +13,6 @@ import numpy.linalg
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-from co_api import list_data_directory
 from utils import (
     list_zarr_tiles_from_s3,
 )

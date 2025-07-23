@@ -6,7 +6,6 @@ import glob
 import pathlib
 import logging
 import xmltodict
-import xml.etree.ElementTree as ET
 from collections import OrderedDict
 
 logging.basicConfig(level=logging.INFO)
