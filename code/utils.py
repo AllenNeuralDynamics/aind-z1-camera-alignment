@@ -298,17 +298,19 @@ def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str, output
 
     # Generate output path
     if output_xml_path == None: 
-        updated_xml_path = xml_path.replace('.xml', '_cam_align.xml')
+        output_xml_path = xml_path.replace('.xml', '_cam_align.xml')
+    else: 
+        
     
     # Write the updated XML back to file
-    with open(updated_xml_path, 'w', encoding='utf-8') as f:
+    with open(output_xml_path, 'w', encoding='utf-8') as f:
         # Write XML declaration
         f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
         # Convert back to XML and write
         xmltodict.unparse(data, f, pretty=True)
     
-    logger.info(f"Updated XML saved to: {updated_xml_path}")
-    return updated_xml_path
+    logger.info(f"Updated XML saved to: {output_xml_path}")
+    return output_xml_path
 
 
 def update_xml_path_to_camera_alignment(xml_path: str, output_xml_path = None): 
