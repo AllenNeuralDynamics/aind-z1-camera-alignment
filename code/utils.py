@@ -299,8 +299,7 @@ def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str, output
     # Generate output path
     if output_xml_path == None: 
         output_xml_path = xml_path.replace('.xml', '_cam_align.xml')
-    else: 
-        
+       
     
     # Write the updated XML back to file
     with open(output_xml_path, 'w', encoding='utf-8') as f:
