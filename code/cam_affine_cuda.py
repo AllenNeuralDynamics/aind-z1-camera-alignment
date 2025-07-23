@@ -330,14 +330,19 @@ def apply_affine_to_xml(root, scratch_root, xml_path = None):
     """
     affine_path = scratch_root + 'updated.M.txt'
     with open(affine_path) as f: affine_dict = {x[0]: list(map(float, x[1:])) for x in csv.reader(f, dialect='excel-tab')}
+
+
     if xml_path == None: 
         xml_path = root + 'stitching_rc_spot_channels.xml'
     output_xml_path = '/scratch/stitching_cam_alignment_spot_channels.xml'
     update_xml_path_to_camera_alignment(xml_path, output_xml_path)
 
     for channel in affine_dict.keys(): 
-        affine = affine_dict[channel]
-        updated_xml_path = add_affines_to_channel(xml_path, affine, channel, output_xml_path)
+        raw_affine = affine_dict[channel]
+        #XYZ for bigstitcher
+        reordered_affine = [raw_affine[4], raw_affine[3], raw_affine[5], 
+                           raw_affine[1], raw_affine[0], raw_affine[2]]
+        updated_xml_path = add_affines_to_channel(xml_path, reordered_affine, channel, output_xml_path)
         xml_path = updated_xml_path
         LOGGER.info(f"Finished processing channel {channel}")
 
