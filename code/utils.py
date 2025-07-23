@@ -331,14 +331,18 @@ def update_xml_path_to_camera_alignment(xml_path: str, output_xml_path = None):
     with open(xml_path, "r") as file:
         data: OrderedDict = xmltodict.parse(file.read())
 
-    dataset_path = data["SpimData"]["SequenceDescription"]["ImageLoader"]["zarr"]
+    dataset_path = data["SpimData"]["SequenceDescription"]["ImageLoader"]["zarr"]["#text"]
+
+    logger.info(f'Dataset path {dataset_path}')
+
     if 'SPIM' in dataset_path:
         updated_path = dataset_path.replace('SPIM', 'image_camera_alignment')
     elif 'image_radial_correction' in dataset_path: 
         updated_path = dataset_path.replace('image_radial_correction', 'image_camera_alignment') 
     else: 
-        logger.warning(f"No SPIM found in path, appending: {dataset_path} -> {updated_path}")
         updated_path = dataset_path + '/image_camera_alignment/'
+        logger.warning(f"No SPIM found in path, appending: {dataset_path} -> {updated_path}")
+        
     
     # Update the XML data
     data["SpimData"]["SequenceDescription"]["ImageLoader"]["zarr"]["#text"] = updated_path
