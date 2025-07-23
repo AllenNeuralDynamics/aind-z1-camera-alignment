@@ -16,13 +16,13 @@ from qc_results import make_and_save_qc_plots
 
 import logging
 from s3_writer import save_tile, get_resolution_zyx, save_corrected_tiles_to_s3, copy_file_to_s3
-from co_api import list_data_directory
 from typing import List, Dict, Any
 import pathlib
 from utils import (
     list_zarr_tiles_from_s3,
     add_affines_to_channel, 
-    update_xml_path_to_camera_alignment
+    update_xml_path_to_camera_alignment, 
+    copy_file
 )
 
 
@@ -63,6 +63,10 @@ def main(args):
             LOGGER.info('*'*50)
             s3_path = f's3://{s3_bucket}/{name}/{TILE_ALIGNMENT_S3_FOLDER_NAME}/{Path(updated_xml_path).name}'
             copy_file_to_s3(updated_xml_path, s3_path)
+            results_xml_path = results_root + Path(updated_xml_path).name
+            LOGGER.info(f'Copying XML to results directory: {results_xml_path}')
+            copy_file(updated_xml_path, results_xml_path)
+
             #list_data_directory('/scratch/')
             # resolution_zyx = get_resolution_zyx(name)
             # save_corrected_tiles_to_s3(out_dir, s3_path, resolution_zyx)
