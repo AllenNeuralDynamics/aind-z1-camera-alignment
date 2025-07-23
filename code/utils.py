@@ -16,7 +16,26 @@ logger = logging.getLogger(__name__)
 def find_zarr_datasets() -> List[pathlib.Path]:
     """
     Find all zarr datasets in the data directory.
-    Returns a list of paths to zarr datasets.
+    
+    Searches for .ome.zarr files both directly in the data directory and 
+    one level deep in subdirectories.
+    
+    Parameters
+    ----------
+    None
+        
+    Returns
+    -------
+    List[pathlib.Path]
+        List of paths to found zarr datasets
+        
+    Notes
+    -----
+    Searches for files with '.ome.zarr' extension in:
+    - /data directory directly
+    - All subdirectories of /data (one level deep)
+    
+    This function is legacy and may not be used in the current S3-based workflow.
     """
     data_dir = pathlib.Path("/data")
     
@@ -200,24 +219,32 @@ Therefore we need the following:
 
 def add_affines_to_channel(xml_path: str, channel_affine: list, channel: str, output_xml_path: str): 
     """
-    Add a camera alignment affine transform to all tiles that belong 
-    to a channel group. 
+    Add camera alignment affine transform to all tiles that belong to a channel.
+    
+    Parses the XML to find all tiles belonging to the specified channel and
+    adds the same affine transform to each tile.
     
     Parameters
     ----------
     xml_path : str
         Path to the input XML file
     channel_affine : list
-        2D affine transform as a list of 6 values
+        2D affine transform as a list of 6 values [A, B, dX, D, E, dY]
     channel : str
-        Channel wavelength to add transforms to (will be used to find tiles)
-    
+        Channel wavelength to add transforms to (used to find matching tiles)
+    output_xml_path : str
+        Path where the updated XML file will be saved
+        
     Returns
     -------
-    str
-        Path to the updated XML file
+    str or None
+        Path to the updated XML file, or None if no tiles found for the channel
+        
+    Notes
+    -----
+    The affine transform is converted from 2D to 3D format before insertion.
+    Transform is inserted at the beginning of the transform stack (highest priority).
     """
-    
     # First, parse the XML to find all tiles that belong to this channel
     with open(xml_path, "r") as file:
         data: OrderedDict = xmltodict.parse(file.read())
@@ -251,6 +278,34 @@ def add_affines_to_channel(xml_path: str, channel_affine: list, channel: str, ou
 
 
 def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str, output_xml_path: str = None): 
+    """
+    Add a camera alignment affine transform to a specific tile in the XML.
+    
+    Parses the XML to find the specified tile and adds the affine transform
+    at the beginning of its transformation stack.
+    
+    Parameters
+    ----------
+    xml_path : str
+        Path to the input XML file
+    channel_affine : list
+        2D affine transform as a list of 6 values [A, B, dX, D, E, dY]
+    tilename : str
+        Name of the tile to add the transform to
+    output_xml_path : str, optional
+        Path where the updated XML file will be saved. 
+        If None, appends '_cam_align' to input filename
+        
+    Returns
+    -------
+    str
+        Path to the updated XML file
+        
+    Notes
+    -----
+    The 2D affine is converted to 3D format before insertion.
+    Transform is named "Camera Alignment Affine" and inserted with highest priority.
+    """ 
     """
     Add a camera alignment affine transform to a specific tile in the XML file.
     
@@ -313,6 +368,30 @@ def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str, output
 
 
 def update_xml_path_to_camera_alignment(xml_path: str, output_xml_path = None): 
+    """
+    Update dataset path in XML to point to camera alignment directory.
+    
+    Modifies the XML file to change the dataset path from the original location
+    to the camera alignment output directory.
+    
+    Parameters
+    ----------
+    xml_path : str
+        Path to the input XML file to modify
+    output_xml_path : str, optional
+        Path where the updated XML file will be saved.
+        If None, appends '_cam_align' to input filename
+        
+    Returns
+    -------
+    str
+        Path to the updated XML file
+        
+    Notes
+    -----
+    Changes the dataset path to point to 'image_camera_alignment' subdirectory.
+    This ensures the XML references the corrected tiles rather than originals.
+    """ 
     """
     Update the data pointer to 'image_camera_alignment'
     
@@ -537,6 +616,26 @@ def extract_tile_transforms(xml_path: str) -> dict[int, list[dict]]:
 
 def get_tile_id_from_name(data:dict, tilename):
     """
+    Extract tile ID from tilename using parsed XML data.
+    
+    Finds the viewsetup with matching tilename and returns its tile number.
+    
+    Parameters
+    ----------
+    data : dict
+        Parsed XML data as dictionary
+    tilename : str
+        Name of the tile to find ID for
+        
+    Returns
+    -------
+    int
+        Tile number/ID corresponding to the tilename
+        
+    Notes
+    -----
+    Searches through ViewSetups to find matching tile name, then extracts
+    the tile attribute which serves as the unique tile identifier.
     """
     
     #find viewsetup with matching tilename
@@ -554,6 +653,27 @@ def get_tile_id_from_name(data:dict, tilename):
 
 def get_tile_transform_given_tilename(xml_path: str, tilename:str):
     """
+    Extract transformation matrix for a specific tile from XML file.
+    
+    Finds the tile by name and returns its current transformation matrix
+    as a list of 12 float values.
+    
+    Parameters
+    ----------
+    xml_path : str
+        Path to the XML file containing tile transformations
+    tilename : str
+        Name of the tile to extract transform for
+        
+    Returns
+    -------
+    list[float]
+        List of 12 float values representing the 3D affine transformation matrix
+        
+    Notes
+    -----
+    Uses tile ID to index into ViewRegistrations and extracts the 'affine' field
+    from the ViewTransform, which contains space-separated float values.
     """
     with open(xml_path, "r") as file:
         data: OrderedDict = xmltodict.parse(file.read())
@@ -572,6 +692,29 @@ def get_tile_transform_given_tilename(xml_path: str, tilename:str):
     return nums
 
 def get_channel_for_tilename(xml_path:str, tilename:str) -> int:
+    """
+    Get the channel number for a specific tile from XML metadata.
+    
+    Parses the XML file to find the viewsetup matching the tilename and
+    extracts its channel attribute.
+    
+    Parameters
+    ----------
+    xml_path : str
+        Path to the XML file containing viewsetup information
+    tilename : str
+        Name of the tile to get channel for
+        
+    Returns
+    -------
+    int
+        Channel number associated with the tile
+        
+    Notes
+    -----
+    Searches through ViewSetups to find matching tile name, then extracts
+    the channel attribute from the tile's attributes.
+    """
     with open(xml_path, "r") as file:
         data: OrderedDict = xmltodict.parse(file.read())
     

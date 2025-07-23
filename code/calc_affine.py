@@ -14,6 +14,7 @@ import dask.array as da
 import json
 import numpy as np
 from numpy.linalg import norm
+import numpy.linalg
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
@@ -30,7 +31,20 @@ max_tiles = 20
 pyramid_level = '0'
 
 def save_tile_metrics(metrics_dict, results_root):
-    """Save the metrics dictionary to a JSON file"""
+    """
+    Save the metrics dictionary to a JSON file.
+    
+    Parameters
+    ----------
+    metrics_dict : dict
+        Dictionary containing tile metrics data
+    results_root : str
+        Root directory path where the JSON file will be saved
+        
+    Returns
+    -------
+    None
+    """
     with open(results_root + '/tile_metrics.json', 'w') as f:
         json.dump(metrics_dict, f, cls=NumpyArrayEncoder)
 
@@ -47,6 +61,44 @@ class NumpyArrayEncoder(json.JSONEncoder):
 
 
 def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/tile_affine_qc', reference_channel = None):
+    """
+    Calculate affine transformations between camera channels for alignment.
+    
+    Performs interest point detection on individual tiles and finds pairs of matched 
+    points between spectrally neighboring channels. Calculates 2D affine transforms 
+    using RANSAC and computes global weighted averages based on inlier counts.
+    
+    Parameters
+    ----------
+    root : str
+        Path to the root directory containing zarr tiles, or S3 path
+    results_root : str, optional
+        Root directory path for saving results, by default '/scratch/'
+    qc_root : str, optional  
+        Root directory path for saving QC plots and metrics, by default '/results/tile_affine_qc'
+    reference_channel : str, optional
+        Channel to use as reference (no transforms applied), by default None
+        If None, uses the longest wavelength channel
+        
+    Returns
+    -------
+    None
+        Results are saved to files in results_root and qc_root directories
+        
+    Raises
+    ------
+    ValueError
+        If reference_channel is specified but not found in available channels
+        
+    Notes
+    -----
+    This function:
+    1. Detects interest points in tiles using DoG blob detection
+    2. Matches descriptors between neighboring channels  
+    3. Uses RANSAC to fit affine transforms
+    4. Computes weighted averages of transforms across tiles
+    5. Saves transform matrices and QC metrics
+    """
     Path(qc_root).mkdir(exist_ok=True)
     list_of_channels = get_list_of_channels(root)
     #print(f'list of channels {list_of_channels}')
@@ -184,7 +236,7 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
             for tile_coord in common_tiles:
                 if "affine_transform" in tile_metrics[f"{c1}_{c2}"][tile_coord]:
                     tile_affine = tile_metrics[f"{c1}_{c2}"][tile_coord]["affine_transform"]
-                    diff_from_average = norm(tile_affine - weighted_affine)
+                    diff_from_average = numpy.linalg.norm(tile_affine - weighted_affine)
                     tile_metrics[f"{c1}_{c2}"][tile_coord]["diff_from_average"] = diff_from_average
 
     # Save the original affine transforms
@@ -200,21 +252,76 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
     visualize_tile_metrics(metrics_loc, qc_root)
 
 def extract_coordinates(tile_name):
-    """Extract X, Y coordinates from tile name"""
+    """
+    Extract X, Y coordinates from tile name.
+    
+    Parameters
+    ----------
+    tile_name : str
+        Tile name in format 'Tile_X_####_Y_####_...'
+        
+    Returns
+    -------
+    tuple[int, int]
+        X and Y coordinates as integers
+        
+    Examples
+    --------
+    >>> extract_coordinates('Tile_X_0007_Y_0003_Z_0000')
+    (7, 3)
+    """
     parts = tile_name.split('_')
     x = int(parts[2])
     y = int(parts[4])
     return x, y
 
 def get_grid_dimensions(tile_name):
-    """Extract grid dimensions from a tile name like 'Tile_X_0007_Y_0003_Z_0000'"""
+    """
+    Extract grid dimensions from a tile name.
+    
+    Parameters
+    ----------
+    tile_name : str
+        Tile name in format 'Tile_X_####_Y_####_Z_####'
+        
+    Returns
+    -------
+    tuple[int, int]
+        Grid dimensions as (width, height) where width is max_x+1 and height is max_y+1
+        
+    Examples
+    --------
+    >>> get_grid_dimensions('Tile_X_0007_Y_0003_Z_0000')
+    (8, 4)
+    """
     parts = tile_name.split('_')
     max_x = int(max([parts[i+1] for i, part in enumerate(parts) if part == 'X']))
     max_y = int(max([parts[i+1] for i, part in enumerate(parts) if part == 'Y']))
     return max_x + 1, max_y + 1
 
 def create_metric_grid(metrics_data, channel_pair, metric_name):
-    """Create a grid of metric values using maximum dimensions from tile names"""
+    """
+    Create a grid of metric values using maximum dimensions from tile names.
+    
+    Parameters
+    ----------
+    metrics_data : dict
+        Dictionary containing metrics data for all channel pairs and tiles
+    channel_pair : str
+        String identifying the channel pair (e.g., '488_561')
+    metric_name : str
+        Name of the metric to extract and grid
+        
+    Returns
+    -------
+    numpy.ndarray
+        2D array with metric values positioned according to tile coordinates
+        Missing values are filled with np.nan
+        
+    Notes
+    -----
+    The grid is indexed as [y, x] to match image conventions.
+    """
     # Get all tile names across all channel pairs
     all_tile_names = []
     for channel_data in metrics_data.values():
@@ -236,7 +343,31 @@ def create_metric_grid(metrics_data, channel_pair, metric_name):
     return grid
 
 def plot_metric_heatmap(grid, title, filename, results_folder, vmin=None, vmax=None, cmap='viridis'):
-    """Create and save a heatmap plot for a metric"""
+    """
+    Create and save a heatmap plot for a metric.
+    
+    Parameters
+    ----------
+    grid : numpy.ndarray
+        2D array containing metric values to plot
+    title : str
+        Title for the plot
+    filename : str
+        Name of the file to save (including extension)
+    results_folder : str or pathlib.Path
+        Directory path where the plot will be saved
+    vmin : float, optional
+        Minimum value for color scale, by default None
+    vmax : float, optional  
+        Maximum value for color scale, by default None
+    cmap : str, optional
+        Colormap name, by default 'viridis'
+        
+    Returns
+    -------
+    None
+        Plot is saved to file
+    """
     plt.figure(figsize=(10, 8))
     sns.heatmap(grid, 
                 cmap=cmap,
@@ -257,7 +388,33 @@ def plot_metric_heatmap(grid, title, filename, results_folder, vmin=None, vmax=N
     plt.close()
 
 def visualize_tile_metrics(metrics_file, results_folder):
-    """Create visualizations for tile metrics"""
+    """
+    Create visualizations for tile metrics.
+    
+    Generates heatmap plots for various metrics across the tile grid including
+    matched points, RANSAC inliers, differences from average transforms, and
+    point counts per channel.
+    
+    Parameters
+    ----------
+    metrics_file : str or pathlib.Path
+        Path to the JSON file containing tile metrics
+    results_folder : str or pathlib.Path
+        Directory where visualization plots will be saved
+        
+    Returns
+    -------
+    None
+        Plots are saved to files in results_folder
+        
+    Notes
+    -----
+    Creates the following plots for each channel pair:
+    - Number of matched points heatmap
+    - Number of RANSAC inliers heatmap  
+    - Difference from average transform heatmap
+    - Point counts per channel heatmaps
+    """
     # Load metrics data
     with open(metrics_file, 'r') as f:
         metrics_data = json.load(f)
@@ -312,6 +469,26 @@ def main():
 
 
 def get_channel_wavelength_from_single_channel_digit(single_channel_digit):
+    """
+    Convert single channel digit to wavelength string.
+    
+    Parameters
+    ----------
+    single_channel_digit : int or str
+        Single digit or string representing the channel (0-4)
+        
+    Returns
+    -------
+    str or int
+        Wavelength string corresponding to the channel digit, or -1 if invalid
+        
+    Examples
+    --------
+    >>> get_channel_wavelength_from_single_channel_digit('1')
+    '561'
+    >>> get_channel_wavelength_from_single_channel_digit(2)
+    '488'
+    """
     if single_channel_digit==  0 or single_channel_digit== '0': 
         return '405'
     elif single_channel_digit== 1 or single_channel_digit== '1': 
@@ -325,6 +502,26 @@ def get_channel_wavelength_from_single_channel_digit(single_channel_digit):
     else:  return -1
 
 def get_digit_from_channel_wavelength(wavelength):
+    """
+    Convert wavelength string to single channel digit.
+    
+    Parameters
+    ----------
+    wavelength : str
+        Wavelength string (e.g., '405', '561', '488', '647', '638', '515')
+        
+    Returns
+    -------
+    str or int
+        Single digit string corresponding to the wavelength, or -1 if not found
+        
+    Examples
+    --------
+    >>> get_digit_from_channel_wavelength('561')
+    '1'
+    >>> get_digit_from_channel_wavelength('488') 
+    '2'
+    """
     lookup = {
         '405':'0', 
         '561':'1', 
@@ -340,6 +537,24 @@ def get_digit_from_channel_wavelength(wavelength):
     return digit
 
 def get_list_of_channels(data_loc):
+    """
+    Get list of unique channels from zarr tiles in local or S3 location.
+    
+    Parameters
+    ----------
+    data_loc : str
+        Path to directory containing zarr tiles, or S3 path
+        
+    Returns
+    -------
+    list[str]
+        List of unique channel identifiers found in tile filenames
+        
+    Notes
+    -----
+    Automatically detects S3 paths and delegates to get_list_of_channels_s3.
+    Expects tile filenames in format: 'tile_x_####_y_####_z_####_ch_XXX.zarr'
+    """
     list_of_tiles = list(glob(f'{data_loc}/*.zarr'))
 
     if "s3" in data_loc:
@@ -355,6 +570,23 @@ def get_list_of_channels(data_loc):
     return channels
 
 def get_list_of_channels_s3(data_loc):
+    """
+    Get list of unique channels from zarr tiles in S3 location.
+    
+    Parameters
+    ----------
+    data_loc : str
+        S3 path to directory containing zarr tiles
+        
+    Returns
+    -------
+    list[str]
+        List of unique channel identifiers found in S3 tile filenames
+        
+    Notes
+    -----
+    Expects tile filenames in format: 'tile_x_####_y_####_z_####_ch_XXX.zarr'
+    """
     list_of_tiles = list_zarr_tiles_from_s3(data_loc)
     # find unique channels in the list of tiles
     channels = []
@@ -365,15 +597,32 @@ def get_list_of_channels_s3(data_loc):
             channels.append(channel)    
     return channels
 
-#make pairs of moving channels 
 def make_pairs_of_channels(channels):
-    """Chooses pairs of channels to align, based on spectral overlap between. 
-     This essentially means that we will align channels that are close in wavelength to each other.
-     Args:
-         channels (list): list of channels in the dataset
-         
-     Returns:
-         list: list of pairs of channels to align
+    """
+    Choose pairs of channels to align based on spectral overlap.
+    
+    Creates sequential pairs of channels that are close in wavelength to each other,
+    which improves alignment quality due to spectral similarity.
+    
+    Parameters
+    ----------
+    channels : list[str]
+        List of channel wavelengths in the dataset
+        
+    Returns
+    -------
+    list[list[str]]
+        List of pairs of channels to align, where each pair is [channel1, channel2]
+        
+    Examples
+    --------
+    >>> make_pairs_of_channels(['405', '488', '561', '647'])
+    [['405', '488'], ['488', '561'], ['561', '647']]
+        
+    Notes
+    -----
+    Channels are first sorted to ensure consistent pairing order.
+    Each adjacent pair in the sorted list becomes an alignment pair.
     """
     #sort the channels
     channels.sort()
@@ -396,19 +645,39 @@ def make_pairs_of_channels(channels):
 
 def make_pairs_of_channels_with_reference(channels, reference_channel):
     """
-    Creates pairs of channels to align, ensuring the reference channel never gets a transform.
+    Create pairs of channels to align with a reference channel that never gets transformed.
     
-    The strategy is to create a spanning tree with the reference channel as the root,
-    where each non-reference channel is paired with a channel that's already aligned
-    (or the reference channel itself).
+    Creates a spanning tree with the reference channel as the root, where each 
+    non-reference channel is paired with a channel that's already aligned.
+    This ensures the reference channel maintains its original coordinates.
     
-    Args:
-        channels (list): list of channels in the dataset
-        reference_channel (str): channel to use as reference (no transforms)
-         
-    Returns:
-        list: list of pairs of channels to align, ordered such that reference channel
-              never gets a transform applied
+    Parameters
+    ----------
+    channels : list[str]
+        List of channel wavelengths in the dataset
+    reference_channel : str
+        Channel to use as reference (no transforms applied to this channel)
+        
+    Returns
+    -------
+    list[list[str]]
+        List of pairs where first element is channel to transform, 
+        second element is the reference/already-aligned channel
+        
+    Raises
+    ------
+    ValueError
+        If reference_channel is not found in the channels list
+        
+    Examples
+    --------
+    >>> make_pairs_of_channels_with_reference(['405', '488', '561', '647'], '647')
+    [['561', '647'], ['488', '561'], ['405', '488']]
+        
+    Notes
+    -----
+    Uses wavelength distance as a heuristic for spectral similarity when choosing
+    which already-aligned channel to pair with each unaligned channel.
     """
     if reference_channel not in channels:
         raise ValueError(f"Reference channel '{reference_channel}' not found in channels: {channels}")
@@ -456,8 +725,24 @@ def create_tile_number_dict(tilenames: list) -> dict:
     """
     Create a dictionary mapping tilenames to tile numbers based on raster scanning order.
     
-    :param tilenames: List of unsorted tilenames containing X, Y, Z coordinates
-    :return: Dictionary mapping tilenames to tile numbers
+    Assigns sequential numbers to tiles based on their X, Y, Z coordinates in 
+    raster scanning order (X fastest, then Y, then Z).
+    
+    Parameters
+    ----------
+    tilenames : list[str]
+        List of unsorted tilenames containing X, Y, Z coordinates
+        Expected format: 'tile_X_####_Y_####_Z_####_ch_XXX.zarr'
+        
+    Returns
+    -------
+    dict[str, int]
+        Dictionary mapping tilenames to tile numbers (0-indexed)
+        
+    Notes
+    -----
+    Only processes tiles from the first channel found to avoid duplicates.
+    Tiles are sorted by (X, Y, Z) coordinates before numbering.
     """
     # Extract coordinates and create a list of (tilename, x, y, z) tuples
     tile_info = []
@@ -489,6 +774,31 @@ def create_tile_number_dict(tilenames: list) -> dict:
 
 
 def find_model(input):
+    """
+    Find affine transformation model between two sets of points using RANSAC.
+    
+    Matches descriptors between two point sets and uses RANSAC to fit a robust
+    affine transformation model, filtering out outliers.
+    
+    Parameters
+    ----------
+    input : tuple[numpy.ndarray, numpy.ndarray]
+        Tuple containing (points_A, points_B) where each is an array of (y, x) coordinates
+        
+    Returns
+    -------
+    tuple[numpy.ndarray or None, int or None, int or None]
+        - Affine transformation parameters (2x3 matrix flattened to exclude last row)
+        - Number of initial matched correspondences  
+        - Number of inlier correspondences after RANSAC
+        Returns (None, None, None) if insufficient matches or RANSAC fails
+        
+    Notes
+    -----
+    Uses descriptor matching with max_distance=6 and max_ratio=0.8.
+    Requires at least min_sample correspondences to proceed with RANSAC.
+    RANSAC uses residual_threshold=1 and max_trials=5000.
+    """
     A, B = input
     # print(f'shape of A {np.shape(A)} shape of B {np.shape(B)}')
     correspond = match_descriptors( A, B, max_distance=6, max_ratio=0.8 )
@@ -501,11 +811,25 @@ def find_model(input):
 
 def getTop(A):
     """
-    Detects blobs in image A, using Difference of Gaussians (DoG)
-    Sort them by intensity and 
-    return coordinates of the top intensity blobs
+    Detect blobs in image using Difference of Gaussians (DoG) and return top intensity blobs.
+    
+    Parameters
+    ----------
+    A : numpy.ndarray
+        2D image array for blob detection
+        
+    Returns
+    -------
+    numpy.ndarray
+        Array of (y, x) coordinates of detected blobs, sorted by intensity (highest first)
+        Shape: (n_blobs, 2) where n_blobs <= dot_num
+        
+    Notes
+    -----
+    Uses DoG blob detection with sigma range [1, 2] and threshold defined by dot_threshold.
+    Returns at most dot_num blobs, sorted by intensity in descending order.
     """
-    blobs = blob_dog(A.T.astype(np.float32), min_sigma=1, max_sigma=1.5,threshold = dot_threshold)
+    blobs = blob_dog(A.T.astype(np.float32), min_sigma=1, max_sigma=2,threshold = dot_threshold)
     intensities = A.T[blobs[:,0].astype(np.uint16),blobs[:,1].astype(np.uint16)]
     return blobs[np.flip(np.argsort(intensities))[:dot_num],:-1]
 
@@ -513,6 +837,29 @@ def getTop(A):
 
 
 def apply_affine_transform_to_spots(spots, transform_matrix):
+    """
+    Apply affine transformation to a set of spot coordinates.
+    
+    Converts 2D coordinates to homogeneous coordinates, applies the transformation
+    matrix, and converts back to Cartesian coordinates.
+    
+    Parameters
+    ----------
+    spots : numpy.ndarray
+        Array of 2D coordinates with shape (n_spots, 2) containing (x, y) positions
+    transform_matrix : numpy.ndarray
+        3x3 affine transformation matrix in homogeneous coordinates
+        
+    Returns
+    -------
+    numpy.ndarray
+        Array of transformed 2D coordinates with shape (n_spots, 2)
+        
+    Notes
+    -----
+    The transformation is applied as: new_coords = spots @ transform_matrix.T
+    Uses homogeneous coordinates to handle affine transformations properly.
+    """
     # Convert spots to homogeneous coordinates
     homogeneous_spots = np.hstack([spots, np.ones((spots.shape[0], 1))])
     

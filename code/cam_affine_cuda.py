@@ -217,11 +217,50 @@ def find_zarr_datasets() -> List[pathlib.Path]:
     logger.info(f"Found zarr datasets: {zarr_datasets}")
     return zarr_datasets
 
-def out_name(fn, out_dir): return out_dir + os.path.basename(fn)
+def out_name(fn, out_dir): 
+    """
+    Generate output filename from input filename and output directory.
+    
+    Parameters
+    ----------
+    fn : str
+        Input filename
+    out_dir : str
+        Output directory path
+        
+    Returns
+    -------
+    str
+        Full path to output file
+    """
+    return out_dir + os.path.basename(fn)
 # def out_name(fn): return Path(out_dir).joinpath(Path(fn).Parent)
 
 
 def process_chunk(chunk, aff):
+    """
+    Apply affine transformation to a chunk of image data using GPU acceleration.
+    
+    Uses CuPy for GPU-accelerated coordinate transformation and interpolation
+    to apply the affine transform to a 3D image chunk.
+    
+    Parameters
+    ----------
+    chunk : np.ndarray
+        3D image chunk with shape (z, height, width)
+    aff : np.ndarray
+        2x3 affine transformation matrix
+        
+    Returns
+    -------
+    np.ndarray
+        Transformed image chunk with same shape as input
+        
+    Notes
+    -----
+    Uses bilinear interpolation (order=1) and constant boundary conditions.
+    Coordinates are generated on GPU for efficiency.
+    """
     chunk_cupy = cupy.array(chunk)
     pixels = chunk.shape[1]
     z_chunk = chunk.shape[0]
@@ -236,13 +275,54 @@ def process_chunk(chunk, aff):
 
 
 def get_channel_from_fn(fn):
+    """
+    Extract channel identifier from filename.
+    
+    Parameters
+    ----------
+    fn : str
+        Filename containing channel information
+        
+    Returns
+    -------
+    str
+        Channel identifier extracted from filename
+        
+    Notes
+    -----
+    Expects filename format ending with '_CHANNEL.zarr' where CHANNEL
+    is the channel identifier.
+    """
     return fn.split('_')[-1].split('.')[0]
 
 def apply_affine_to_xml(root, scratch_root, xml_path = None): 
-    """Reads the affine transforms from file 
-    and appends it to the relevant xml. 
+    """
+    Read affine transforms from file and append them to the relevant XML.
     
-
+    Loads precomputed affine transformation matrices and integrates them into
+    the XML configuration file for downstream processing steps.
+    
+    Parameters
+    ----------
+    root : str
+        Root directory path containing source data
+    scratch_root : str
+        Directory path containing the affine transformation file (updated.M.txt)
+    xml_path : str, optional
+        Path to input XML file, by default None
+        If None, uses root + 'stitching_rc_spot_channels.xml'
+        
+    Returns
+    -------
+    str
+        Path to the updated XML file with camera alignment transforms
+        
+    Notes
+    -----
+    - Reads transformation matrices from scratch_root + 'updated.M.txt'
+    - Creates output XML at '/results/stitching_cam_alignment_spot_channels.xml'
+    - Updates XML path metadata to reflect camera alignment processing
+    - Adds affine transforms for each channel found in the transform file
     """
     affine_path = scratch_root + 'updated.M.txt'
     with open(affine_path) as f: affine_dict = {x[0]: list(map(float, x[1:])) for x in csv.reader(f, dialect='excel-tab')}
