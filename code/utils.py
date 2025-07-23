@@ -331,7 +331,7 @@ def update_xml_path_to_camera_alignment(xml_path: str, output_xml_path = None):
     with open(xml_path, "r") as file:
         data: OrderedDict = xmltodict.parse(file.read())
 
-    dataset_path = data["SpimData"]["SequenceDescription"]["ImageLoader"]["zarr"]["#text"]
+    dataset_path = extract_dataset_path(xml_path)
 
     logger.info(f'Dataset path {dataset_path}')
 
