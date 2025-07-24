@@ -299,6 +299,14 @@ def get_channel_from_fn(fn):
     """
     return fn.split('_')[-1].split('.')[0]
 
+def invert_affine_2d(aff_2x3):
+    """Invert a 2x3 affine transformation matrix"""
+    A = aff_2x3[:, :2]  # 2x2 linear part
+    t = aff_2x3[:, 2]   # translation vector
+    A_inv = cupy.linalg.inv(A)
+    t_inv = -A_inv @ t
+    return cupy.column_stack([A_inv, t_inv])
+
 def apply_affine_to_xml(root, scratch_root, xml_path = None): 
     """
     Read affine transforms from file and append them to the relevant XML.
@@ -340,8 +348,12 @@ def apply_affine_to_xml(root, scratch_root, xml_path = None):
     for channel in affine_dict.keys(): 
         raw_affine = affine_dict[channel]
         #XYZ for bigstitcher
-        reordered_affine = [raw_affine[4], raw_affine[3], raw_affine[5], 
-                           raw_affine[1], raw_affine[0], raw_affine[2]]
+        reordered_affine = np.array([[raw_affine[4], raw_affine[3], raw_affine[5]], 
+                           [raw_affine[1], raw_affine[0], raw_affine[2]]])
+        affine_matrix = invert_affine_2d(reordered_affine)
+        reordered_affine = affine_matrix.flatten()
+        # write out as long string
+        
         updated_xml_path = add_affines_to_channel(xml_path, reordered_affine, channel, output_xml_path)
         xml_path = updated_xml_path
         LOGGER.info(f"Finished processing channel {channel}")
