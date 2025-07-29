@@ -794,6 +794,11 @@ def find_model(input):
     RANSAC uses residual_threshold=1 and max_trials=5000.
     """
     A, B = input
+
+    #verify that both A, B have spots in them
+    if len(A)==0 or len(B) == 0: 
+        return None, None, None
+
     # print(f'shape of A {np.shape(A)} shape of B {np.shape(B)}')
     correspond = match_descriptors( A, B, max_distance=6, max_ratio=0.8 )
     if type(correspond) == type(None) or len(correspond)<min_sample: return None, None, None
