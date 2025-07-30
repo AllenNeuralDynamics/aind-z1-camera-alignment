@@ -353,7 +353,7 @@ def apply_affine_to_xml(root, scratch_root, xml_path = None):
         # affine_matrix = invert_affine_2d(reordered_affine)
 
         # reordered_affine = affine_matrix.flatten()
-        # reordered_affine = raw_affine
+        reordered_affine = reordered_affine.flatten()
         # write out as long string
 
         updated_xml_path = add_affines_to_channel(xml_path, reordered_affine, channel, output_xml_path)
