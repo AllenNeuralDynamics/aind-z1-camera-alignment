@@ -348,12 +348,12 @@ def apply_affine_to_xml(root, scratch_root, xml_path = None):
     for channel in affine_dict.keys(): 
         raw_affine = affine_dict[channel]
         #XYZ for bigstitcher
-        reordered_affine = np.array([[raw_affine[4], raw_affine[3], raw_affine[5]], 
-                           [raw_affine[1], raw_affine[0], raw_affine[2]]])
-        # affine_matrix = invert_affine_2d(reordered_affine)
+        # reordered_affine = np.array([[raw_affine[4], raw_affine[3], raw_affine[5]], 
+        #                    [raw_affine[1], raw_affine[0], raw_affine[2]]])
+        affine_matrix = invert_affine_2d(raw_affine)
 
-        # reordered_affine = affine_matrix.flatten()
-        reordered_affine = reordered_affine.flatten()
+        reordered_affine = affine_matrix.flatten()
+        # reordered_affine = reordered_affine.flatten()
         # write out as long string
 
         updated_xml_path = add_affines_to_channel(xml_path, reordered_affine, channel, output_xml_path)
