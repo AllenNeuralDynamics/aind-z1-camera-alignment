@@ -832,8 +832,6 @@ def getTop(A):
     intensities = A.T[blobs[:,0].astype(np.uint16),blobs[:,1].astype(np.uint16)]
     return blobs[np.flip(np.argsort(intensities))[:dot_num],:-1]
 
-# tiffs = glob(root+'TILE*tif')
-
 
 def apply_affine_transform_to_spots(spots, transform_matrix):
     """
