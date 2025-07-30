@@ -350,6 +350,8 @@ def apply_affine_to_xml(root, scratch_root, xml_path = None):
         #XYZ for bigstitcher
         # reordered_affine = np.array([[raw_affine[4], raw_affine[3], raw_affine[5]], 
         #                    [raw_affine[1], raw_affine[0], raw_affine[2]]])
+        raw_affine = np.array([[raw_affine[0], raw_affine[1], raw_affine[2]], 
+                           [raw_affine[3], raw_affine[4], raw_affine[5]]])
         affine_matrix = invert_affine_2d(raw_affine)
 
         reordered_affine = affine_matrix.flatten()
