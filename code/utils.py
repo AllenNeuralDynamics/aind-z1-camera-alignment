@@ -312,7 +312,12 @@ def add_affines_to_channel(xml_path: str, channel_affine: list, channel: str, ou
     with open(xml_path, "r") as file:
         data: OrderedDict = xmltodict.parse(file.read())
     
-    viewsetups = data["SpimData"]["SequenceDescription"]["ViewSetups"]["ViewSetup"]
+    try:
+        viewsetups = data["SpimData"]["SequenceDescription"]["ViewSetups"]["ViewSetup"]
+    except KeyError as e:
+        logger.error(f"Missing expected key in XML structure: {e}")
+        logger.error("Ensure the XML file has the correct structure: 'SpimData -> SequenceDescription -> ViewSetups -> ViewSetup'")
+        return None
     
     # Handle case where ViewSetup could be a single dict or list of dicts
     if not isinstance(viewsetups, list):
