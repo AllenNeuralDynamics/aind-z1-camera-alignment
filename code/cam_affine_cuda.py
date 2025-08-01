@@ -4,15 +4,12 @@
 import sys, os, csv, numpy as np
 import time, threading
 from glob import glob
-import dask.array as da
 import zarr
 from pathlib import Path
-
 from calc_affine import calc_affine, get_channel_wavelength_from_single_channel_digit
 from qc_results import make_and_save_qc_plots
-
 import logging
-from s3_writer import save_tile, get_resolution_zyx, save_corrected_tiles_to_s3, copy_file_to_s3
+from s3_writer import  get_resolution_zyx,  copy_file_to_s3
 from typing import List, Dict, Any
 import pathlib
 from utils import (
@@ -25,7 +22,6 @@ from utils import (
 logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M")
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
-CAMERA_CORRECTED_S3_FOLDER_NAME="image_camera_alignment"
 TILE_ALIGNMENT_S3_FOLDER_NAME = "image_tile_alignment"
 
 def main(args):
@@ -64,9 +60,6 @@ def main(args):
 
         else:
             print(f'no radial_correction_temp')
-        
-        
-
     else: 
         root = '/data/'
         scratch_root = '/scratch/'
@@ -137,7 +130,6 @@ def debug():
     name = "HCR_BL6-001_2023-06-19_00-01-00"
     s3_bucket = 'aind-open-data'
 
-
     root += name+'/radial_correction.ome.zarr/'
     backup_name = '/data/' + name + '/SPIM.ome.zarr/'
     out_dir = scratch_root + name + "/affine.ome.zarr/"
@@ -146,9 +138,6 @@ def debug():
 
     LOGGER.info(f'Calculating affine between channels now ! ')
     LOGGER.info('*'*50)
-
-
-
     if Path(root).exists():
         calc_affine(root)
         apply_affine_to_tiles(root, scratch_root, out_dir)
@@ -277,14 +266,11 @@ def apply_affine_to_xml(root, scratch_root, xml_path = None):
     for channel in affine_dict.keys(): 
         raw_affine = affine_dict[channel]
         #XYZ for bigstitcher
-        # reordered_affine = np.array([[raw_affine[4], raw_affine[3], raw_affine[5]], 
-        #                    [raw_affine[1], raw_affine[0], raw_affine[2]]])
         raw_affine = np.array([[raw_affine[0], raw_affine[1], raw_affine[2]], 
                            [raw_affine[3], raw_affine[4], raw_affine[5]]])
         affine_matrix = invert_affine_2d(raw_affine)
 
         reordered_affine = affine_matrix.flatten()
-        # reordered_affine = reordered_affine.flatten()
         # write out as long string
 
         updated_xml_path = add_affines_to_channel(xml_path, reordered_affine, channel, output_xml_path)

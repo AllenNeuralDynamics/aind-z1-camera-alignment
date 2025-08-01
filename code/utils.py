@@ -176,29 +176,6 @@ def load_data_description() -> str:
     except Exception as e:
         raise RuntimeError(f"Error loading data_description.json: {str(e)}")
 
-# def list_all_tiles_in_path(SPIM_folder: str) -> list:
-#     SPIM_folder = pathlib.Path(SPIM_folder)
-#     # assert SPIM_folder.exists()
-    
-#     return list(SPIM_folder.glob("*.zarr"))
-
-# def list_all_tiles_in_bucket_path(bucket_SPIM_folder: str, bucket_name = "aind-open-data") -> list: 
-#     """
-#     List all tiles in bucket path in s3
-#     """
-#     # s3 = boto3.resource('s3')
-#     bucket_name, prefix = bucket_SPIM_folder.replace("s3://","").split("/", 1)
-#     # my_bucket = s3.Bucket(bucket_name)
-
-#     client = boto3.client('s3')
-#     result = client.list_objects(Bucket=bucket_name, Prefix=prefix+"/", Delimiter='/')
-#     # print(result)
-#     tiles = []
-#     for o in result.get('CommonPrefixes'):
-#         #print('sub folder : ', o.get('Prefix'))
-#         tiles.append(o.get('Prefix')) 
-#     return tiles
-
 def list_zarr_tiles_from_s3(s3_path: str) -> List[str]:
     """
     List all zarr tile files from the specified S3 path.
