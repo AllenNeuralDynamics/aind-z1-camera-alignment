@@ -796,7 +796,7 @@ def find_model(input):
     A, B = input
 
     #verify that both A, B have spots in them
-    if len(A)==0 or len(B) == 0: 
+    if len(A) == 0 or len(B) == 0: 
         return None, None, None
 
     # print(f'shape of A {np.shape(A)} shape of B {np.shape(B)}')
