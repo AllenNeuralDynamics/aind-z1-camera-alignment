@@ -1,4 +1,4 @@
-# hash:sha256:c8c282a37e54ebf11cbddfd75b0cdb8988025f729faad006a08a0127f11be587
+# hash:sha256:82984ff08222caed20287a221e638cde00daa66c19a9333d85dbf496f811f974
 ARG REGISTRY_HOST
 FROM $REGISTRY_HOST/codeocean/jupyterlab:3.6.1-miniconda4.12.0-python3.9-ubuntu20.04
 
@@ -13,7 +13,6 @@ ARG GIT_ACCESS_TOKEN
 COPY git-askpass /
 
 RUN pip install -U --no-cache-dir \
-    aind-data-transfer[imaging]==0.25.2 \
     codeocean==0.3.0 \
     dask==2023.7.1 \
     hdf5plugin==5.1.0 \
@@ -21,7 +20,9 @@ RUN pip install -U --no-cache-dir \
     matplotlib==3.9.2 \
     numpy==1.24.4 \
     pyyaml==6.0.1 \
+    s3fs==2025.7.0 \
     scikit-image==0.21.0 \
     seaborn==0.13.2 \
     tifffile==2023.7.10 \
+    xmltodict==0.14.2 \
     zarr==2.16.0

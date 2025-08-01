@@ -15,10 +15,6 @@
 		"pip": {
 			"packages": [
 				{
-					"name": "aind-data-transfer[imaging]",
-					"version": "0.25.2"
-				},
-				{
 					"name": "codeocean",
 					"version": "0.3.0"
 				},
@@ -47,6 +43,10 @@
 					"version": "6.0.1"
 				},
 				{
+					"name": "s3fs",
+					"version": "2025.7.0"
+				},
+				{
 					"name": "scikit-image",
 					"version": "0.21.0"
 				},
@@ -57,6 +57,10 @@
 				{
 					"name": "tifffile",
 					"version": "2023.7.10"
+				},
+				{
+					"name": "xmltodict",
+					"version": "0.14.2"
 				},
 				{
 					"name": "zarr",
