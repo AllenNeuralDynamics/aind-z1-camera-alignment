@@ -596,6 +596,103 @@ def make_pairs_of_channels(channels):
     Choose pairs of channels to align based on spectral overlap.
     
     Creates sequential pairs of channels that are close in wavelength to each other,
+    which improves alignment quality due to spectral similarity. Skips pairs where
+    the expected bleedthrough between channels is <= 1.
+    
+    Parameters
+    ----------
+    channels : list[str]
+        List of channel wavelengths in the dataset
+        
+    Returns
+    -------
+    list[list[str]]
+        List of pairs of channels to align, where each pair is [channel1, channel2]
+        Only includes pairs with significant spectral bleedthrough (> 1)
+        
+    Examples
+    --------
+    >>> make_pairs_of_channels(['405', '488', '561', '647'])
+    [['405', '488'], ['488', '561']]  # May skip some pairs based on bleedthrough
+        
+    Notes
+    -----
+    Channels are first sorted to ensure consistent pairing order.
+    Each adjacent pair in the sorted list is evaluated for bleedthrough significance.
+    Pairs with bleedthrough values <= 1 in both directions are skipped.
+    """
+
+    #expected bleedthrough matrix has the order 405,488,514,561,594,638 on both axis
+    # expected bleedthrough matrix is comparing the following fluorophores: 
+    #0. alexafluor 405
+    #1. alexafluor 488
+    #2. alexafluor 514
+    #3. alexafluor 561
+    #4. alexafluor 594
+    #5. alexafluor 647 (mapped as 638)
+    
+    bleedthrough_axis_index = {  "405": 0,
+                    "488": 1,
+                    "514": 2, 
+                    "561": 3,
+                    "594": 4,
+                    "638": 5,
+                    "647": 5}  # Map 647 to same index as 638
+    expected_bleedthrough_matrix = np.array([
+    [80.5, 2.3, 1.2, 0, 0, 0],
+    [0, 63.9, 20.9, 0, 0, 0 ], 
+    [0, 21.1, 59.5, 6.4, 0, 0], 
+    [0, 0, 0.3, 42.5, 18.2, 0],
+    [0, 0, 0, 0, 82.8, 16.7],
+    [0, 0, 0, 0, 1, 85.9]
+    ])
+
+    #sort the channels
+    channels.sort()
+    
+    #initialize list of pairs
+    pairs = []
+    
+    #iterate through the channels
+    for i in range(len(channels)-1):
+        #get the current channel
+        channel = channels[i]
+        
+        #get the next channel
+        next_channel = channels[i+1]
+        
+        # Check if both channels are in the bleedthrough matrix
+        if channel in bleedthrough_axis_index and next_channel in bleedthrough_axis_index:
+            # Get matrix indices for both channels
+            idx1 = bleedthrough_axis_index[channel]
+            idx2 = bleedthrough_axis_index[next_channel]
+            
+            # Check bleedthrough in both directions
+            bleedthrough_1_to_2 = expected_bleedthrough_matrix[idx1, idx2]
+            bleedthrough_2_to_1 = expected_bleedthrough_matrix[idx2, idx1]
+            
+            # Get the maximum bleedthrough value between the two channels
+            max_bleedthrough = max(bleedthrough_1_to_2, bleedthrough_2_to_1)
+            
+            # Only add the pair if bleedthrough is > 1
+            if max_bleedthrough > 1:
+                pairs.append([channel, next_channel])
+                print(f"Added pair [{channel}, {next_channel}] - max bleedthrough: {max_bleedthrough:.1f}")
+            else:
+                print(f"Skipped pair [{channel}, {next_channel}] - max bleedthrough: {max_bleedthrough:.1f} <= 1")
+        else:
+            # If channel not in matrix, add pair anyway (fallback behavior)
+            pairs.append([channel, next_channel])
+            missing_channels = [ch for ch in [channel, next_channel] if ch not in bleedthrough_axis_index]
+            print(f"Added pair [{channel}, {next_channel}] - channel(s) {missing_channels} not in bleedthrough matrix")
+        
+    return pairs
+
+def make_pairs_of_channels_without_bleedthrough_checking(channels):
+    """
+    Choose pairs of channels to align based on spectral overlap.
+    
+    Creates sequential pairs of channels that are close in wavelength to each other,
     which improves alignment quality due to spectral similarity.
     
     Parameters
@@ -618,6 +715,31 @@ def make_pairs_of_channels(channels):
     Channels are first sorted to ensure consistent pairing order.
     Each adjacent pair in the sorted list becomes an alignment pair.
     """
+
+    #expected bleedthrough matrix has the order 405,488,514,561,594,638 on both axis
+    # expected bleedthrough matrix is comparing the following fluorophores: 
+    #0. alexafluor 405
+    #1. alexafluor 488
+    #2. alexafluor 514
+    #3. alexafluor 561
+    #4. alexafluor 594
+    #5. alexafluor 647
+    
+    bleedthrough_axis_index = {  "405": 0,
+                    "488": 1,
+                    "514": 2, 
+                    "561": 3,
+                    "594": 4,
+                    "638": 5}
+    expected_bleedthrough_matrix = np.array([
+    [80.5, 2.3, 1.2, 0, 0, 0],
+    [0, 63.9, 20.9, 0, 0, 0 ], 
+    [0, 21.1, 59.5, 6.4, 0, 0], 
+    [0, 0, 0.3, 42.5, 18.2, 0],
+    [0, 0, 0, 0, 82.8, 16.7],
+    [0, 0, 0, 0, 1, 85.9]
+    ])
+
     #sort the channels
     channels.sort()
     
