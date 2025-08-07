@@ -677,9 +677,9 @@ def make_pairs_of_channels(channels):
             # Only add the pair if bleedthrough is > 1
             if max_bleedthrough > 1:
                 pairs.append([channel, next_channel])
-                print(f"Added pair [{channel}, {next_channel}] - max bleedthrough: {max_bleedthrough:.1f}")
+                print(f"Added pair [{channel}, {next_channel}] - max bleedthrough: {max_bleedthrough:.1f} %")
             else:
-                print(f"Skipped pair [{channel}, {next_channel}] - max bleedthrough: {max_bleedthrough:.1f} <= 1")
+                print(f"Skipped pair [{channel}, {next_channel}] - max bleedthrough: {max_bleedthrough:.1f}% <= 1%")
         else:
             # If channel not in matrix, add pair anyway (fallback behavior)
             pairs.append([channel, next_channel])
