@@ -48,15 +48,19 @@ def main(args):
             calc_affine(s3_path_rc)
             
             updated_xml_path = apply_affine_to_xml(data_folder, scratch_root, xml_path = xml_path)
+            updated_xml_path_forward = apply_affine_to_xml_forward_transform(data_foder, scratch_root,xml_path = xml_path )
             # apply_affine_to_tiles(s3_path_rc, scratch_root, out_dir)
             LOGGER.info('*'*50)
             LOGGER.info(f'Saving to S3 now')
             LOGGER.info('*'*50)
             s3_path = f's3://{s3_bucket}/{name}/{TILE_ALIGNMENT_S3_FOLDER_NAME}/{Path(updated_xml_path).name}'
             copy_file_to_s3(updated_xml_path, s3_path)
+            copy_file_to_s3(updated_xml_path_forward, s3_path)
             results_xml_path = results_root + Path(updated_xml_path).name
+            results_xml_path_forward = results_root + Path(updated_xml_path_forward).name
             LOGGER.info(f'Copying XML to results directory: {results_xml_path}')
             copy_file(updated_xml_path, results_xml_path)
+            copy_file(updated_xml_path_forward, results_xml_path_forward)
 
         else:
             print(f'no radial_correction_temp')
@@ -225,6 +229,63 @@ def invert_affine_2d(aff_2x3):
     A_inv = np.linalg.inv(A)
     t_inv = -A_inv @ t
     return np.column_stack([A_inv, t_inv])
+
+    
+def apply_affine_to_xml_forward_transform(root, scratch_root, xml_path = None): 
+    """
+    Read affine transforms from file and append them to the relevant XML without inversion.
+    
+    Loads precomputed affine transformation matrices and integrates them into
+    the XML configuration file for downstream processing steps. Uses the forward
+    transformation matrices without inversion.
+    
+    Parameters
+    ----------
+    root : str
+        Root directory path containing source data
+    scratch_root : str
+        Directory path containing the affine transformation file (updated.M.txt)
+    xml_path : str, optional
+        Path to input XML file, by default None
+        If None, uses root + 'stitching_rc_spot_channels.xml'
+        
+    Returns
+    -------
+    str
+        Path to the updated XML file with camera alignment forward transforms
+        
+    Notes
+    -----
+    - Reads transformation matrices from scratch_root + 'updated.M.txt'
+    - Creates output XML at '/scratch/stitching_cam_alignment_forward_transform_spot_channels.xml'
+    - Updates XML path metadata to reflect camera alignment processing
+    - Adds forward affine transforms (no inversion) for each channel found in the transform file
+    """
+    affine_path = scratch_root + 'updated.M.txt'
+    with open(affine_path) as f: affine_dict = {x[0]: list(map(float, x[1:])) for x in csv.reader(f, dialect='excel-tab')}
+
+    if xml_path == None: 
+        xml_path = root + 'stitching_rc_spot_channels.xml'
+    output_xml_path = '/scratch/stitching_cam_alignment_forward_transform_spot_channels.xml'
+    update_xml_path_to_camera_alignment(xml_path, output_xml_path)
+
+    for channel in affine_dict.keys(): 
+        raw_affine = affine_dict[channel]
+        #XYZ for bigstitcher
+        raw_affine = np.array([[raw_affine[0], raw_affine[1], raw_affine[2]], 
+                           [raw_affine[3], raw_affine[4], raw_affine[5]]])
+        
+        # Use the forward transform directly (no inversion)
+        affine_matrix = raw_affine
+
+        reordered_affine = affine_matrix.flatten()
+        # write out as long string
+
+        updated_xml_path = add_affines_to_channel(xml_path, reordered_affine, channel, output_xml_path)
+        xml_path = updated_xml_path
+        LOGGER.info(f"Finished processing channel {channel}")
+
+    return updated_xml_path
 
 def apply_affine_to_xml(root, scratch_root, xml_path = None): 
     """
