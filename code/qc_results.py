@@ -13,6 +13,31 @@ from calc_affine import get_list_of_channels, get_channel_wavelength_from_single
 
 
 def make_and_save_qc_plots(dataset_path, corrected_path):
+    """
+    Generate and save quality control plots comparing raw and corrected image data.
+    
+    Creates comparative visualizations between original and camera-aligned datasets
+    to assess the quality of the alignment correction process.
+    
+    Parameters
+    ----------
+    dataset_path : str
+        Path to the original/raw dataset directory containing zarr tiles
+    corrected_path : str
+        Path to the camera-corrected dataset directory containing processed zarr tiles
+        
+    Returns
+    -------
+    None
+        QC plots are saved to disk
+        
+    Notes
+    -----
+    - Generates plots for each pair of channels that were aligned
+    - Compares raw vs corrected data using metrics like SSIM and cross-correlation
+    - Handles both single-digit channel identifiers and full wavelength strings
+    - Excludes channel 405 from analysis as it serves as the reference channel
+    """
     # tile_list = get_list_of_tiles(dataset_path)
 
     list_of_channels = get_list_of_channels(dataset_path)
@@ -87,31 +112,125 @@ def make_and_save_qc_plots(dataset_path, corrected_path):
 
     
 def get_z_plane(tile_loc, level = 0):
+    """
+    Get midpoint Z index from a zarr tile at specified pyramid level.
+    
+    Parameters
+    ----------
+    tile_loc : str
+        Path to the zarr tile file
+    level : int, default=0
+        Pyramid level to extract shape information from
+        
+    Returns
+    -------
+    int
+        Z index corresponding to the midpoint of the tile
+    """
     tile = da.from_zarr(tile_loc, level)
 
     midpoint = int(tile.shape[2]/2)
     return midpoint
 
 def get_z_planes(tile_loc, level = 0, thickness = 20, spacing = 4):
+    """
+    Get list of Z plane indices from a zarr tile with specified parameters.
+    
+    Parameters
+    ----------
+    tile_loc : str
+        Path to the zarr tile file
+    level : int, default=0
+        Pyramid level to extract shape information from
+    thickness : int, default=20
+        Thickness of the Z sampling region
+    spacing : int, default=4
+        Spacing between sampled Z planes
+        
+    Returns
+    -------
+    list[int]
+        List of Z indices within the sampling region
+    """
     tile = da.from_zarr(tile_loc, level)
     z = tile.shape[2]
     planes = list(range((z-thickness)//2, (z+thickness)//2, spacing))
     return planes 
 
 def get_tiles_of_channel(dataset_path, channel):
+    """
+    Get list of zarr tile files for a specific channel.
+    
+    Parameters
+    ----------
+    dataset_path : str
+        Path to the dataset directory
+    channel : str
+        Channel identifier to filter tiles by
+        
+    Returns
+    -------
+    list[str]
+        List of file paths to zarr tiles for the specified channel
+    """
     list_of_tiles = list(glob(f'{dataset_path}/*{channel}.zarr'))
 
     return list_of_tiles
 
 def get_list_of_tiles(dataset_path):
+    """
+    Get list of all zarr tile files in a dataset directory.
+    
+    Parameters
+    ----------
+    dataset_path : str
+        Path to the dataset directory
+        
+    Returns
+    -------
+    list[str]
+        List of file paths to all zarr tiles in the dataset
+    """
     list_of_tiles = list(glob(f'{dataset_path}/*.zarr'))
     return list_of_tiles
 
 def load_raw_zarr_slice(zarr_path, z_index, level = '0'):
+    """
+    Load a specific Z slice from a raw zarr tile at specified pyramid level.
+    
+    Parameters
+    ----------
+    zarr_path : str
+        Path to the zarr tile file
+    z_index : int
+        Z index of the slice to load
+    level : str, default='0'
+        Pyramid level as string identifier
+        
+    Returns
+    -------
+    dask.array.Array
+        2D dask array representing the Z slice
+    """
     z = da.from_zarr(zarr_path, level)
     return z[0,0,z_index]
 
 def load_scratch_zarr_slice(zarr_path, z_index):
+    """
+    Load a specific Z slice from a processed zarr tile in scratch directory.
+    
+    Parameters
+    ----------
+    zarr_path : str
+        Path to the zarr tile file in scratch directory
+    z_index : int
+        Z index of the slice to load
+        
+    Returns
+    -------
+    dask.array.Array
+        2D dask array representing the Z slice
+    """
     z = da.from_zarr(zarr_path)
     return z[z_index]
 
@@ -120,6 +239,30 @@ def load_scratch_zarr_slice(zarr_path, z_index):
 #     return z[0,0,z_index]
 
 def overlay_images_rgb(image1_raw, image2_raw, image1_corrected, image2_corrected, title):
+    """
+    Create RGB overlay comparison of raw and corrected image pairs.
+    
+    Generates side-by-side RGB overlays where the first image appears in red
+    channel and second image in green channel for visual comparison.
+    
+    Parameters
+    ----------
+    image1_raw : np.ndarray
+        First raw image (red channel in overlay)
+    image2_raw : np.ndarray  
+        Second raw image (green channel in overlay)
+    image1_corrected : np.ndarray
+        First corrected image (red channel in overlay)
+    image2_corrected : np.ndarray
+        Second corrected image (green channel in overlay)
+    title : str
+        Title for the plot and output filename
+        
+    Returns
+    -------
+    None
+        Saves plot to disk as PNG file
+    """
     def create_overlay(image1, image2):
         # Get sizes of the images
         height1, width1 = image1.shape
@@ -221,6 +364,25 @@ def create_overlay(image1, image2, vmin=None, vmax=None, clip_percentile=(5, 98)
     return overlay
 
 def normalize_and_scale(image, vmin=None, vmax=None, clip_percentile=(5, 99.9)):
+    """
+    Normalize and scale image values to uint8 range with optional clipping.
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        Input image array
+    vmin : float, optional
+        Minimum value for clipping. If None, uses percentile values
+    vmax : float, optional
+        Maximum value for clipping. If None, uses percentile values
+    clip_percentile : tuple[float, float], default=(5, 99.9)
+        Lower and upper percentiles for clipping when vmin/vmax not specified
+        
+    Returns
+    -------
+    np.ndarray
+        Normalized and scaled image as uint8 array
+    """
     # Compute percentile values for clipping
     low, high = np.percentile(image, clip_percentile)
     
