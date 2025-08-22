@@ -338,7 +338,7 @@ def apply_affine_to_xml(root, scratch_root, xml_path = None):
         xml_path = updated_xml_path
         LOGGER.info(f"Finished processing channel {channel}")
 
-    return updated_xml_path
+    return xml_path
 
 if __name__ == "__main__":
     debug()
