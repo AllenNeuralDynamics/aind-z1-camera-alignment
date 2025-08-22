@@ -112,13 +112,13 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
     elif reference_channel not in list_of_channels:
         raise ValueError(f"Reference channel '{reference_channel}' not found in available channels: {list_of_channels}")
     
-    print(f"Using reference channel: {reference_channel}")
+    # print(f"Using reference channel: {reference_channel}")
 
     # Create pairs of channels with reference channel consideration
-    new_pairs_of_channels = make_pairs_of_channels_with_reference(list_of_channels, reference_channel)
-    print(f' new pairs of channels {new_pairs_of_channels}')
+    # new_pairs_of_channels = make_pairs_of_channels_with_reference(list_of_channels, reference_channel)
+    # print(f' new pairs of channels {new_pairs_of_channels}')
     pairs_of_channels = make_pairs_of_channels(list_of_channels)
-    print(f' old pairs of channels {pairs_of_channels}')
+    # print(f' old pairs of channels {pairs_of_channels}')
     # assert pairs_of_channels == bu_pairs_of_channels
 
     keep_cam = {x:'' for x in sum(pairs_of_channels, [])}
@@ -621,34 +621,8 @@ def make_pairs_of_channels(channels):
     Each adjacent pair in the sorted list is evaluated for bleedthrough significance.
     Pairs with bleedthrough values <= 1 in both directions are skipped.
     """
-
-    #expected bleedthrough matrix has the order 405,488,514,561,594,638 on both axis
-    # expected bleedthrough matrix is comparing the following fluorophores: 
-    #0. alexafluor 405
-    #1. alexafluor 488
-    #2. alexafluor 514
-    #3. alexafluor 561
-    #4. alexafluor 594
-    #5. alexafluor 647 (mapped as 638)
-    
-    bleedthrough_axis_index = {  "405": 0,
-                    "488": 1,
-                    "514": 2, 
-                    "561": 3,
-                    "594": 4,
-                    "638": 5,
-                    "647": 5}  # Map 647 to same index as 638
-
     #simplify to be just this list of channels: [[488,514],[514,561],[561,594],[594,638]]
-    expected_bleedthrough_matrix = np.array([
-    [80.5, 2.3, 1.2, 0, 0, 0],
-    [0, 63.9, 20.9, 0, 0, 0 ], 
-    [0, 21.1, 59.5, 6.4, 0, 0], 
-    [0, 0, 0.3, 42.5, 18.2, 0],
-    [0, 0, 0, 0, 82.8, 16.7],
-    [0, 0, 0, 0, 1, 85.9]
-    ])
-
+    approved_list_of_channel_pairs = [['488','514'],['514','561'],['561','594'],['594','638']]
     #sort the channels
     channels.sort()
     
@@ -663,30 +637,11 @@ def make_pairs_of_channels(channels):
         #get the next channel
         next_channel = channels[i+1]
         
-        # Check if both channels are in the bleedthrough matrix
-        if channel in bleedthrough_axis_index and next_channel in bleedthrough_axis_index:
-            # Get matrix indices for both channels
-            idx1 = bleedthrough_axis_index[channel]
-            idx2 = bleedthrough_axis_index[next_channel]
-            
-            # Check bleedthrough in both directions
-            bleedthrough_1_to_2 = expected_bleedthrough_matrix[idx1, idx2]
-            bleedthrough_2_to_1 = expected_bleedthrough_matrix[idx2, idx1]
-            
-            # Get the maximum bleedthrough value between the two channels
-            max_bleedthrough = max(bleedthrough_1_to_2, bleedthrough_2_to_1)
-            
-            # Only add the pair if bleedthrough is > 1
-            if max_bleedthrough > 1:
-                pairs.append([channel, next_channel])
-                print(f"Added pair [{channel}, {next_channel}] - max bleedthrough: {max_bleedthrough:.1f} %")
-            else:
-                print(f"Skipped pair [{channel}, {next_channel}] - max bleedthrough: {max_bleedthrough:.1f}% <= 1%")
-        else:
-            # If channel not in matrix, add pair anyway (fallback behavior)
-            pairs.append([channel, next_channel])
-            missing_channels = [ch for ch in [channel, next_channel] if ch not in bleedthrough_axis_index]
-            print(f"Added pair [{channel}, {next_channel}] - channel(s) {missing_channels} not in bleedthrough matrix")
+        #append the pair to the list of pairs
+        proposed_pair = [channel, next_channel]
+        if proposed_pair in approved_list_of_channel_pairs:
+            pairs.append(proposed_pair)
+
         
     return pairs
 
@@ -717,30 +672,6 @@ def make_pairs_of_channels_without_bleedthrough_checking(channels):
     Channels are first sorted to ensure consistent pairing order.
     Each adjacent pair in the sorted list becomes an alignment pair.
     """
-
-    #expected bleedthrough matrix has the order 405,488,514,561,594,638 on both axis
-    # expected bleedthrough matrix is comparing the following fluorophores: 
-    #0. alexafluor 405
-    #1. alexafluor 488
-    #2. alexafluor 514
-    #3. alexafluor 561
-    #4. alexafluor 594
-    #5. alexafluor 647
-    
-    bleedthrough_axis_index = {  "405": 0,
-                    "488": 1,
-                    "514": 2, 
-                    "561": 3,
-                    "594": 4,
-                    "638": 5}
-    expected_bleedthrough_matrix = np.array([
-    [80.5, 2.3, 1.2, 0, 0, 0],
-    [0, 63.9, 20.9, 0, 0, 0 ], 
-    [0, 21.1, 59.5, 6.4, 0, 0], 
-    [0, 0, 0.3, 42.5, 18.2, 0],
-    [0, 0, 0, 0, 82.8, 16.7],
-    [0, 0, 0, 0, 1, 85.9]
-    ])
 
     #sort the channels
     channels.sort()
