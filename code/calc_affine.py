@@ -638,6 +638,8 @@ def make_pairs_of_channels(channels):
                     "594": 4,
                     "638": 5,
                     "647": 5}  # Map 647 to same index as 638
+
+    #simplify to be just this list of channels: [[488,514],[514,561],[561,594],[594,638]]
     expected_bleedthrough_matrix = np.array([
     [80.5, 2.3, 1.2, 0, 0, 0],
     [0, 63.9, 20.9, 0, 0, 0 ], 
