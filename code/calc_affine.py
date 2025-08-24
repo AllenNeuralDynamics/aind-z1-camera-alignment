@@ -233,6 +233,10 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
                     diff_from_average = numpy.linalg.norm(tile_affine - weighted_affine)
                     tile_metrics[f"{c1}_{c2}"][tile_coord]["diff_from_average"] = diff_from_average
 
+    # add default condition for no pairs of channels 
+    if len(pairs_of_channels) == 0: 
+        for ch in list_of_channels: 
+            finalM[ch] = np.array([[1,0,0], [0,1,0],[0,0,1]])
     # Save the original affine transforms
     with open(results_root+'updated.M.txt', 'w') as f:
         for e in sorted(finalM.keys()):
