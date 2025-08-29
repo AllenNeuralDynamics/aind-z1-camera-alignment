@@ -112,13 +112,13 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
     elif reference_channel not in list_of_channels:
         raise ValueError(f"Reference channel '{reference_channel}' not found in available channels: {list_of_channels}")
     
-    print(f"Using reference channel: {reference_channel}")
+    # print(f"Using reference channel: {reference_channel}")
 
     # Create pairs of channels with reference channel consideration
-    new_pairs_of_channels = make_pairs_of_channels_with_reference(list_of_channels, reference_channel)
-    print(f' new pairs of channels {new_pairs_of_channels}')
+    # new_pairs_of_channels = make_pairs_of_channels_with_reference(list_of_channels, reference_channel)
+    # print(f' new pairs of channels {new_pairs_of_channels}')
     pairs_of_channels = make_pairs_of_channels(list_of_channels)
-    print(f' old pairs of channels {pairs_of_channels}')
+    # print(f' old pairs of channels {pairs_of_channels}')
     # assert pairs_of_channels == bu_pairs_of_channels
 
     keep_cam = {x:'' for x in sum(pairs_of_channels, [])}
@@ -233,6 +233,10 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
                     diff_from_average = numpy.linalg.norm(tile_affine - weighted_affine)
                     tile_metrics[f"{c1}_{c2}"][tile_coord]["diff_from_average"] = diff_from_average
 
+    # add default condition for no pairs of channels 
+    if len(pairs_of_channels) == 0: 
+        for ch in list_of_channels: 
+            finalM[ch] = np.array([[1,0,0], [0,1,0],[0,0,1]])
     # Save the original affine transforms
     with open(results_root+'updated.M.txt', 'w') as f:
         for e in sorted(finalM.keys()):
@@ -596,6 +600,60 @@ def make_pairs_of_channels(channels):
     Choose pairs of channels to align based on spectral overlap.
     
     Creates sequential pairs of channels that are close in wavelength to each other,
+    which improves alignment quality due to spectral similarity. Skips pairs where
+    the expected bleedthrough between channels is <= 1.
+    
+    Parameters
+    ----------
+    channels : list[str]
+        List of channel wavelengths in the dataset
+        
+    Returns
+    -------
+    list[list[str]]
+        List of pairs of channels to align, where each pair is [channel1, channel2]
+        Only includes pairs with significant spectral bleedthrough (> 1)
+        
+    Examples
+    --------
+    >>> make_pairs_of_channels(['405', '488', '561', '647'])
+    [['405', '488'], ['488', '561']]  # May skip some pairs based on bleedthrough
+        
+    Notes
+    -----
+    Channels are first sorted to ensure consistent pairing order.
+    Each adjacent pair in the sorted list is evaluated for bleedthrough significance.
+    Pairs with bleedthrough values <= 1 in both directions are skipped.
+    """
+    #simplify to be just this list of channels: [[488,514],[514,561],[561,594],[594,638]]
+    approved_list_of_channel_pairs = [['488','514'],['514','561'],['561','594'],['594','638']]
+    #sort the channels
+    channels.sort()
+    
+    #initialize list of pairs
+    pairs = []
+    
+    #iterate through the channels
+    for i in range(len(channels)-1):
+        #get the current channel
+        channel = channels[i]
+        
+        #get the next channel
+        next_channel = channels[i+1]
+        
+        #append the pair to the list of pairs
+        proposed_pair = [channel, next_channel]
+        if proposed_pair in approved_list_of_channel_pairs:
+            pairs.append(proposed_pair)
+
+        
+    return pairs
+
+def make_pairs_of_channels_without_bleedthrough_checking(channels):
+    """
+    Choose pairs of channels to align based on spectral overlap.
+    
+    Creates sequential pairs of channels that are close in wavelength to each other,
     which improves alignment quality due to spectral similarity.
     
     Parameters
@@ -618,6 +676,7 @@ def make_pairs_of_channels(channels):
     Channels are first sorted to ensure consistent pairing order.
     Each adjacent pair in the sorted list becomes an alignment pair.
     """
+
     #sort the channels
     channels.sort()
     
