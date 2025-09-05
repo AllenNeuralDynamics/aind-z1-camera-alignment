@@ -94,6 +94,10 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
     5. Saves transform matrices and QC metrics
     """
     Path(qc_root).mkdir(exist_ok=True)
+    # Create interest points directory
+    interest_points_dir = Path(qc_root) / "interest_points"
+    interest_points_dir.mkdir(exist_ok=True)
+
     list_of_channels = get_list_of_channels(root)
     #print(f'list of channels {list_of_channels}')
     
@@ -164,9 +168,11 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
 
     # Process images to get points while maintaining tile association
     points_by_tile = {}
+    interest_point_files = {}  # Track saved interest point files
     for k in Is.keys():
         print('finding spots for', k)
         points_by_tile[k] = {}
+        interest_point_files[k] = {}
         
         # Process each tile's worth of planes
         for tile_idx, tile_planes in enumerate(Is[k]):
@@ -174,6 +180,10 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
             # Get points for all planes in this tile
             points = Pool(nodes).map(getTop, np.array(tile_planes).reshape((-1, pixels, pixels)))
             points_by_tile[k][tile_coord] = points
+
+            # Save interest points to file
+            interest_point_file = save_interest_points(points, tile_coord, k, interest_points_dir)
+            interest_point_files[k][tile_coord] = interest_point_file
 
     # Process each channel pair
     for c1, c2 in pairs_of_channels:
@@ -216,7 +226,9 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
                 tile_metrics[f"{c1}_{c2}"][tile_coord].update({
                     "matched_points": num_matches,
                     "num_inliers": num_inliers,
-                    "affine_transform": np.append(aff,[0,0,1]).reshape((3,3))
+                    "affine_transform": np.append(aff,[0,0,1]).reshape((3,3)), 
+                    f"interest_points_{c1}": interest_point_files[c1][tile_coord], 
+                    f"interest_points_{c2}": interest_point_files[c2][tile_coord] 
                 })
         
         if all_affs:
@@ -248,6 +260,54 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
     metrics_file = "tile_metrics.json"
     metrics_loc = Path(qc_root).joinpath(metrics_file)
     visualize_tile_metrics(metrics_loc, qc_root)
+
+def save_interest_points(points_data, tile_coord, channel, interest_points_dir):
+    """
+    Save interest points for a specific tile and channel to a pickle file.
+    
+    Parameters
+    ----------
+    points_data : list[numpy.ndarray]
+        List of arrays containing interest points for each plane in the tile
+    tile_coord : str
+        Tile coordinate identifier
+    channel : str
+        Channel identifier
+    interest_points_dir : str or pathlib.Path
+        Directory where interest point files will be saved
+        
+    Returns
+    -------
+    str
+        Relative path to the saved pickle file
+    """
+    # Create filename
+    filename = f"{tile_coord}_{channel}.pkl"
+    filepath = Path(interest_points_dir) / filename
+    
+    # Save the points data as pickle
+    with open(filepath, 'wb') as f:
+        pickle.dump(points_data, f)
+    
+    # Return relative path
+    return str(Path("interest_points") / filename)
+
+def load_interest_points(filepath):
+    """
+    Load interest points from a pickle file.
+    
+    Parameters
+    ----------
+    filepath : str or pathlib.Path
+        Path to the pickle file containing interest points
+        
+    Returns
+    -------
+    list[numpy.ndarray]
+        List of arrays containing interest points for each plane
+    """
+    with open(filepath, 'rb') as f:
+        return pickle.load(f)
 
 def extract_coordinates(tile_name):
     """
