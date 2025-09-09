@@ -165,10 +165,9 @@ def make_and_save_qc_plots_xml_based(dataset_path, scratch_root, results_root="/
     
     print(f"Loaded transforms for channels: {list(transforms.keys())}")
     
-    # Get channels and create pairs
-    list_of_channels = get_list_of_channels(dataset_path)
-    if len(list_of_channels[0]) != 3:
-        list_of_channels = [get_channel_wavelength_from_single_channel_digit(cam) for cam in list_of_channels] 
+    # Get channels from the transforms instead of scanning dataset_path
+    # In pipeline mode, zarr files are on S3, not in local dataset_path
+    list_of_channels = list(transforms.keys())
     
     # Remove 405 from alignment (it's the reference)
     if '405' in list_of_channels:
