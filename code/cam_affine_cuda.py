@@ -7,7 +7,7 @@ from glob import glob
 import zarr
 from pathlib import Path
 from calc_affine import calc_affine, get_channel_wavelength_from_single_channel_digit
-from qc_results import make_and_save_qc_plots
+from qc_results import make_and_save_qc_plots_xml_based, make_and_save_qc_plots
 import logging
 from s3_writer import  get_resolution_zyx,  copy_file_to_s3
 from typing import List, Dict, Any
@@ -61,6 +61,10 @@ def main(args):
             LOGGER.info(f'Copying XML to results directory: {results_xml_path}')
             copy_file(updated_xml_path, results_xml_path)
             copy_file(updated_xml_path_forward, results_xml_path_forward)
+            LOGGER.info('*'*50)
+            LOGGER.info(f'Making QC Figures now ')
+            LOGGER.info('*'*50)
+            make_and_save_qc_plots_xml_based(data_folder, scratch_root, results_root)
 
         else:
             print(f'no radial_correction_temp')
