@@ -23,6 +23,7 @@ logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M")
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 TILE_ALIGNMENT_S3_FOLDER_NAME = "image_tile_alignment"
+CAMERA_CORRECTED_S3_FOLDER_NAME = "image_camera_corrected"
 
 def main(args):
     if args['pipeline']: 
@@ -69,101 +70,123 @@ def main(args):
         else:
             print(f'no radial_correction_temp')
     else: 
-        root = '/data/'
+        data_folder = '/data/'
         scratch_root = '/scratch/'
         results_root = '/results/'
 
         name = args["dataset_name"]
         s3_bucket = args["bucket"]
-        root += name+'/radial_correction.ome.zarr/'
-        backup_name = "/data/"+ name + '/SPIM.ome.zarr/'
-        out_dir = scratch_root + name + "/affine.ome.zarr/" #saves temp full res of data here before saving to s3 and making QC plots
-        qc_results_dir = results_root + name + "/tile_qc_plots/" #unnecessary 
+        root = data_folder + name + '/radial_correction.ome.zarr/'
+        backup_name = "/data/" + name + '/SPIM.ome.zarr/'
         
-        #calulate affine between sets of channels 
-
-        LOGGER.info(f'Calculating affine between channels now ! ')
-        LOGGER.info('*'*50)
-
+        print(f'Running non-pipeline version of Camera Alignment!')
         print(f'name {name}')
         print(f'root {root}')
-        print(f'bu name{backup_name}')
+        print(f'backup_name {backup_name}')
 
-
-        rc_root_list = list(Path('/data/').glob('image_radial_correction'))
-        if len(rc_root_list)==0:
-            rc_root_list = list(Path('/data/').joinpath(name).glob('image_radial_correction'))
+        # Look for radial correction data
+        rc_root_list = list(Path(data_folder).glob('image_radial_correction'))
+        if len(rc_root_list) == 0:
+            rc_root_list = list(Path(data_folder).joinpath(name).glob('image_radial_correction'))
             print(f'running capsule version')
         else: 
             print(f'running pipeline version')
         print(f'rc_root_list {rc_root_list}')
 
-        if len(rc_root_list) >0 :
+        if len(rc_root_list) > 0:
             rc_root_path = rc_root_list[0].as_posix()
             calc_affine(rc_root_path)
-            apply_affine_to_tiles(rc_root_path, scratch_root, out_dir)
-
+            
+            xml_path = rc_root_path + '/stitching_rc_spot_channels.xml'
+            if Path(xml_path).exists():
+                updated_xml_path = apply_affine_to_xml(data_folder, scratch_root, xml_path=xml_path)
+                updated_xml_path_forward = apply_affine_to_xml_forward_transform(data_folder, scratch_root, xml_path=xml_path)
+                # Copy XML files to results and S3
+                results_xml_path = results_root + Path(updated_xml_path).name
+                results_xml_path_forward = results_root + Path(updated_xml_path_forward).name
+                copy_file(updated_xml_path, results_xml_path)
+                copy_file(updated_xml_path_forward, results_xml_path_forward)
+                
+                LOGGER.info('*'*50)
+                LOGGER.info(f'Saving to S3 now')
+                LOGGER.info('*'*50)
+                s3_path = f's3://{s3_bucket}/{name}/{TILE_ALIGNMENT_S3_FOLDER_NAME}/{Path(updated_xml_path).name}'
+                copy_file_to_s3(updated_xml_path, s3_path)
+                copy_file_to_s3(updated_xml_path_forward, s3_path)
+            
             LOGGER.info('*'*50)
-            LOGGER.info(f'Saving to S3 now')
+            LOGGER.info(f'Making QC Figures now')
             LOGGER.info('*'*50)
-            s3_path = f's3://{s3_bucket}/{name}/{CAMERA_CORRECTED_S3_FOLDER_NAME}'
-            #list_data_directory('/scratch/')
-            resolution_zyx = get_resolution_zyx(name)
-            save_corrected_tiles_to_s3(out_dir, s3_path, resolution_zyx)
-            LOGGER.info('*'*50)
-            LOGGER.info(f'Making QC Figures now ')
-            LOGGER.info('*'*50)
-            make_and_save_qc_plots(rc_root_path, out_dir)
+            make_and_save_qc_plots_xml_based(data_folder, scratch_root, results_root)
         
         else:
             calc_affine(backup_name)
-            apply_affine_to_tiles(backup_name, scratch_root, out_dir)
+            xml_path = backup_name + '/stitching_rc_spot_channels.xml'
+            if Path(xml_path).exists():
+                updated_xml_path = apply_affine_to_xml(data_folder, scratch_root, xml_path=xml_path)
+                updated_xml_path_forward = apply_affine_to_xml_forward_transform(data_folder, scratch_root, xml_path=xml_path)
+                # Copy XML files to results and S3
+                results_xml_path = results_root + Path(updated_xml_path).name
+                results_xml_path_forward = results_root + Path(updated_xml_path_forward).name
+                copy_file(updated_xml_path, results_xml_path)
+                copy_file(updated_xml_path_forward, results_xml_path_forward)
+                
+                s3_path = f's3://{s3_bucket}/{name}/{TILE_ALIGNMENT_S3_FOLDER_NAME}/{Path(updated_xml_path).name}'
+                copy_file_to_s3(updated_xml_path, s3_path)
+                copy_file_to_s3(updated_xml_path_forward, s3_path)
+                
             LOGGER.info('*'*50)
-            LOGGER.info(f'Making QC Figures now ')
+            LOGGER.info(f'Making QC Figures now')
             LOGGER.info('*'*50)
-            make_and_save_qc_plots(backup_name, out_dir)
-            s3_path = f's3://{s3_bucket}/{name}/{CAMERA_CORRECTED_S3_FOLDER_NAME}'
-            
-            resolution_zyx = get_resolution_zyx(name)
-
-            save_corrected_tiles_to_s3(out_dir, s3_path, resolution_zyx)
+            make_and_save_qc_plots_xml_based(data_folder, scratch_root, results_root)
             
     
 
 def debug():
-    root = '/data/'
+    data_folder = '/data/'
     scratch_root = '/scratch/'
     results_root = '/results/'
 
     name = "HCR_BL6-001_2023-06-19_00-01-00"
     s3_bucket = 'aind-open-data'
 
-    root += name+'/radial_correction.ome.zarr/'
+    root = data_folder + name + '/radial_correction.ome.zarr/'
     backup_name = '/data/' + name + '/SPIM.ome.zarr/'
-    out_dir = scratch_root + name + "/affine.ome.zarr/"
 
-    #calulate affine between sets of channels 
-
-    LOGGER.info(f'Calculating affine between channels now ! ')
+    # Calculate affine between sets of channels 
+    LOGGER.info(f'Calculating affine between channels now!')
     LOGGER.info('*'*50)
+    
     if Path(root).exists():
         calc_affine(root)
-        apply_affine_to_tiles(root, scratch_root, out_dir)
-
+        xml_path = root + 'stitching_rc_spot_channels.xml'
+        if Path(xml_path).exists():
+            updated_xml_path = apply_affine_to_xml(data_folder, scratch_root, xml_path=xml_path)
+            updated_xml_path_forward = apply_affine_to_xml_forward_transform(data_folder, scratch_root, xml_path=xml_path)
+            # Copy XML files to results
+            results_xml_path = results_root + Path(updated_xml_path).name
+            results_xml_path_forward = results_root + Path(updated_xml_path_forward).name
+            copy_file(updated_xml_path, results_xml_path)
+            copy_file(updated_xml_path_forward, results_xml_path_forward)
         LOGGER.info('*'*50)
-        LOGGER.info(f'Making QC Figures now ')
+        LOGGER.info(f'Making QC Figures now')
         LOGGER.info('*'*50)
-        make_and_save_qc_plots(root, out_dir)
+        make_and_save_qc_plots_xml_based(data_folder, scratch_root, results_root)
     else:
         calc_affine(backup_name)
-        apply_affine_to_tiles(backup_name, scratch_root, out_dir)
+        xml_path = backup_name + 'stitching_rc_spot_channels.xml'
+        if Path(xml_path).exists():
+            updated_xml_path = apply_affine_to_xml(data_folder, scratch_root, xml_path=xml_path)
+            updated_xml_path_forward = apply_affine_to_xml_forward_transform(data_folder, scratch_root, xml_path=xml_path)
+            # Copy XML files to results
+            results_xml_path = results_root + Path(updated_xml_path).name
+            results_xml_path_forward = results_root + Path(updated_xml_path_forward).name
+            copy_file(updated_xml_path, results_xml_path)
+            copy_file(updated_xml_path_forward, results_xml_path_forward)
         LOGGER.info('*'*50)
-        LOGGER.info(f'Making QC Figures now ')
+        LOGGER.info(f'Making QC Figures now')
         LOGGER.info('*'*50)
-        make_and_save_qc_plots(backup_name, out_dir)
-    s3_path = f's3://{s3_bucket}/{name}/{CAMERA_CORRECTED_S3_FOLDER_NAME}'
-    
-    resolution_zyx = get_resolution_zyx(name)
+        make_and_save_qc_plots_xml_based(data_folder, scratch_root, results_root)
 
 
 def find_zarr_datasets() -> List[pathlib.Path]:
