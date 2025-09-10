@@ -124,10 +124,10 @@ def run_camera_alignment_pipeline(args: Dict[str, Any]) -> None:
     _save_xml_results(updated_xml_path, updated_xml_path_forward, results_root, s3_bucket, name)
     
     # Generate QC plots
-    LOGGER.info('*' * 50)
-    LOGGER.info(f'Making QC Figures now')
-    LOGGER.info('*' * 50)
-    make_and_save_qc_plots(data_folder, scratch_root, results_root)
+    # LOGGER.info('*' * 50)
+    # LOGGER.info(f'Making QC Figures now')
+    # LOGGER.info('*' * 50)
+    # make_and_save_qc_plots(data_folder, scratch_root, results_root)
 
 def run_camera_alignment_capsule(args: Dict[str, Any]) -> None:
     """
@@ -201,10 +201,10 @@ def _process_local_data(
         _save_xml_results(updated_xml_path, updated_xml_path_forward, results_root, s3_bucket, name)
         
         # Generate QC plots
-        LOGGER.info('*' * 50)
-        LOGGER.info(f'Making QC Figures now')
-        LOGGER.info('*' * 50)
-        make_and_save_qc_plots(data_folder, scratch_root, results_root)
+        # LOGGER.info('*' * 50)
+        # LOGGER.info(f'Making QC Figures now')
+        # LOGGER.info('*' * 50)
+        # make_and_save_qc_plots(data_folder, scratch_root, results_root)
     else:
         LOGGER.warning(f"No XML file found at {xml_path}. Skipping XML processing.")
 
