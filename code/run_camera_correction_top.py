@@ -9,6 +9,7 @@ import glob
 from utils import (
     load_data_description,
     list_zarr_tiles_from_s3,
+    get_project_name
 ) 
 
 # Set up logging
@@ -61,9 +62,14 @@ def process_zarr_datasets():
         "s3_zarr_path": s3_path,  # Pass S3 path for zarr tiles
     }
     
-
-    # Run 2D camera correction
-    run_2d_camera_correction(args)
+    # load data_description.json and check if the project=="PLACE"
+    project_name = get_project_name()
+    if project_name == "PLACE": 
+        logger.info("Skipping camera alignment for proteomics datasets")
+        
+    else: 
+        # Run 2D camera correction
+        run_2d_camera_correction(args)
     
     # Record successful processing
     with open(results_dir / "processing_complete.txt", "w") as f:

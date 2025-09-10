@@ -118,6 +118,65 @@ def find_zarr_datasets() -> List[pathlib.Path]:
     logger.info(f"Found zarr datasets: {zarr_datasets}")
     return zarr_datasets
 
+def get_project_name() ->: 
+    """
+    Load the data_description.json file from the data directory and extract project_name .
+    
+    Searches for data_description.json in multiple possible locations using glob patterns:
+    1. ../data/output_aind_metadata/
+    2. ../data/
+    3. ../data/{any_subdirectory}/
+    
+    Returns
+    -------
+    str
+        The project name extracted from the 'project_name' field in data_description.json
+        
+    Raises
+    ------
+    FileNotFoundError
+        If no data_description.json file is found in any of the search locations
+    RuntimeError
+        If error occurs while loading or parsing the JSON configuration
+    """
+    base_data_dir = pathlib.Path("/data")
+    
+    # Use glob to search for data_description.json in all possible locations
+    search_patterns = [
+        base_data_dir / "output_aind_metadata" / "data_description.json",
+        base_data_dir / "data_description.json",
+        # glob.glob(f"{base_data_dir.as_posix()}/data_description.json")[0],  # Any subdirectory
+        glob.glob(f"{base_data_dir.as_posix()}/*/data_description.json")[0], 
+        
+    ]
+    
+    # Find the first existing file
+    json_file_path = None
+    for json_path in search_patterns:
+        if pathlib.Path(json_path).exists():
+            json_file_path = json_path
+            logger.info(f"Found data_description.json at: {json_file_path}")
+            break
+    
+    if json_file_path is None:
+        raise FileNotFoundError(
+            f"No data_description.json file found in {base_data_dir} or any of its subdirectories"
+        )
+    
+    logger.info(f"Loading configuration from {json_file_path}")
+    
+    try:
+        with open(json_file_path, 'r') as f:
+            config = json.load(f)
+            project_name = config.get('project_name')
+            if not project_name:
+                raise ValueError("'project_name' field not found in data_description.json")
+            logger.info(f"Loaded project_name : {project_name}")
+            return project_name
+    except Exception as e:
+        raise RuntimeError(f"Error loading data_description.json: {str(e)}")
+
+
 def load_data_description() -> str:
     """
     Load the data_description.json file from the data directory and extract dataset name.
