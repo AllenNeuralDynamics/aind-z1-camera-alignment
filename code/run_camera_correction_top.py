@@ -52,6 +52,10 @@ def process_zarr_datasets():
     logger.info(f"Processing dataset: {dataset_name}")
     logger.info(f"Found {len(zarr_tiles)} zarr tiles to process")
         
+    # Get project name to determine if we should skip alignment
+    project_name = get_project_name()
+    skip_alignment = (project_name == "PLACE")
+    
     # Set up arguments for the correction function
     args = {
         "dataset_name": dataset_name,
@@ -60,16 +64,16 @@ def process_zarr_datasets():
         "z_correct": False,  # Default to 2D correction
         "pipeline": True,  # Always use pipeline mode for S3 data
         "s3_zarr_path": s3_path,  # Pass S3 path for zarr tiles
+        "skip_alignment": skip_alignment,  # Skip alignment for PLACE projects
     }
     
-    # load data_description.json and check if the project=="PLACE"
-    project_name = get_project_name()
-    if project_name == "PLACE": 
-        logger.info("Skipping camera alignment for proteomics datasets")
+    if skip_alignment:
+        logger.info(f"Skipping camera alignment for project: {project_name}")
+    else:
+        logger.info(f"Running camera alignment for project: {project_name}")
         
-    else: 
-        # Run 2D camera correction
-        run_2d_camera_correction(args)
+    # Run camera correction (will handle skipping internally)
+    run_2d_camera_correction(args)
     
     # Record successful processing
     with open(results_dir / "processing_complete.txt", "w") as f:
