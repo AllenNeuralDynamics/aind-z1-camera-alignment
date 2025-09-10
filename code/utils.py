@@ -118,7 +118,7 @@ def find_zarr_datasets() -> List[pathlib.Path]:
     logger.info(f"Found zarr datasets: {zarr_datasets}")
     return zarr_datasets
 
-def get_project_name() ->: 
+def get_project_name() ->str: 
     """
     Load the data_description.json file from the data directory and extract project_name .
     
