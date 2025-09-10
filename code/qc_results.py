@@ -180,13 +180,22 @@ def make_and_save_qc_plots_xml_based(dataset_path, scratch_root, results_root="/
         raw_tiles_c1 = get_tiles_of_channel(dataset_path, c1)
         raw_tiles_c2 = get_tiles_of_channel(dataset_path, c2)
         
+        print(f"Processing channels {c1}, {c2}: found {len(raw_tiles_c1)} and {len(raw_tiles_c2)} tiles")
+        
         if len(raw_tiles_c1) != len(raw_tiles_c2):
             print(f"Warning: Mismatch in tile counts for channels {c1}, {c2}")
+            continue
+            
+        if len(raw_tiles_c1) == 0:
+            print(f"Warning: No tiles found for channels {c1}, {c2} in {dataset_path}")
+            print("This is expected in pipeline mode where tiles are stored on S3")
             continue
             
         # Process subset of tiles for QC (to avoid too many plots)
         max_tiles = 3  # Limit number of tiles to process
         tiles_to_process = min(max_tiles, len(raw_tiles_c1))
+        
+        print(f"Will process {tiles_to_process} tiles for channels {c1}, {c2}")
         
         for i in range(tiles_to_process):
             tile_c1 = raw_tiles_c1[i]
@@ -223,8 +232,17 @@ def make_and_save_qc_plots_xml_based(dataset_path, scratch_root, results_root="/
     if affine_file.exists():
         dest_path = Path(results_root) / "camera_alignment_transforms.txt"
         shutil.copy2(affine_file, dest_path)
+        print(f"Copied transform file to: {dest_path}")
     
-    print(f"QC plots saved to: {results_root}")
+    # Check if any plots were actually generated
+    plot_files = list(Path(results_root).glob("*.png"))
+    if plot_files:
+        print(f"Generated {len(plot_files)} QC plots in: {results_root}")
+        for plot_file in plot_files:
+            print(f"  - {plot_file.name}")
+    else:
+        print(f"No QC plots generated. This is expected in pipeline mode where tiles are on S3.")
+        print(f"Transform file saved to: {results_root}")
 
 def apply_transform_to_slice(image_slice, channel, transforms):
     """
