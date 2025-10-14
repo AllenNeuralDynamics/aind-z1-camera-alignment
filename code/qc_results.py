@@ -19,8 +19,10 @@ try:
     from skimage.feature import blob_dog, match_descriptors
     from skimage import transform as tf
     from scipy.ndimage import gaussian_filter
-    from scipy.signal import peak_local_maxima
+    from scipy.ndimage import gaussian_filter
+    from skimage.feature import peak_local_max
     from matplotlib.backends.backend_pdf import PdfPages
+    from PyPDF2 import PdfMerger
     ADVANCED_QC_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Advanced QC features not available. Missing packages: {e}")
