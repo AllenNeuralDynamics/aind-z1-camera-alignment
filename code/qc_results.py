@@ -1,16 +1,294 @@
 import dask.array as da
 import numpy as np 
+import numpy.linalg
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from glob import glob
 import zarr
 from pathlib import Path
-from skimage.metrics import structural_similarity as ssim
-from skimage.registration import phase_cross_correlation
-from skimage import exposure
+import json
+import os
+from tqdm import tqdm
+from multiprocessing import cpu_count
+
+# Handle optional imports for QC functionality
+try:
+    from skimage.metrics import structural_similarity as ssim
+    from skimage.registration import phase_cross_correlation
+    from skimage import exposure
+    from skimage.feature import blob_dog, match_descriptors
+    from skimage import transform as tf
+    from scipy.ndimage import gaussian_filter
+    from scipy.signal import peak_local_maxima
+    from matplotlib.backends.backend_pdf import PdfPages
+    ADVANCED_QC_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Advanced QC features not available. Missing packages: {e}")
+    ADVANCED_QC_AVAILABLE = False
+
+try:
+    from PyPDF2 import PdfMerger
+except ImportError:
+    try:
+        from PyPDF2 import PdfFileMerger as PdfMerger
+    except ImportError:
+        print("Warning: PDF merging not available. Install PyPDF2 for full functionality.")
+        PdfMerger = None
 
 from calc_affine import get_list_of_channels, get_channel_wavelength_from_single_channel_digit, make_pairs_of_channels
 
+# QC Constants and Configuration
+QC_CONFIG = {
+    'dot_num': 10000,
+    'dot_threshold': 10,
+    'top_n_points': 4,
+    'n_bins': 50,
+    'width': 30,
+    'tiles_to_check': np.arange(0, 8, 2),  # Check tiles 0, 2, 4, 6
+    'pyramid_level': '0'
+}
 
+def get_top_points(image, dot_num=10000, dot_threshold=10):
+    """
+    Detect blobs in image using Difference of Gaussians (DoG).
+    Sort them by intensity and return coordinates of the top intensity blobs.
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        2D image array for blob detection
+    dot_num : int, default=10000
+        Maximum number of points to return
+    dot_threshold : float, default=10
+        Threshold for blob detection
+        
+    Returns
+    -------
+    np.ndarray
+        Array of (y, x) coordinates of top intensity blobs
+    """
+    if not ADVANCED_QC_AVAILABLE:
+        print("Advanced QC features not available. Please install required packages.")
+        return np.array([])
+        
+    try:
+        blobs = blob_dog(
+            image.T.astype(np.float32), 
+            min_sigma=1, 
+            max_sigma=1,  # Changed from 1.5 to int 
+            threshold=dot_threshold
+        )
+        if len(blobs) == 0:
+            return np.array([])
+            
+        intensities = image.T[blobs[:, 0].astype(np.uint16), blobs[:, 1].astype(np.uint16)]
+        return blobs[np.flip(np.argsort(intensities))[:dot_num], :-1]
+    except Exception as e:
+        print(f"Error in blob detection: {e}")
+        return np.array([])
+
+def merge_pdfs(pdf_paths, output_path):
+    """
+    Merge multiple PDF files into a single PDF.
+    
+    Parameters
+    ----------
+    pdf_paths : list[str]
+        List of paths to PDF files to merge
+    output_path : str
+        Path for the merged output PDF
+    """
+    if PdfMerger is None:
+        print("PDF merging not available. Please install PyPDF2.")
+        return
+        
+    try:
+        merger = PdfMerger()
+        for pdf in pdf_paths:
+            if os.path.exists(pdf):
+                merger.append(pdf)
+        merger.write(output_path)
+        merger.close()
+        print(f"Merged {len(pdf_paths)} PDFs into {output_path}")
+    except Exception as e:
+        print(f"Error merging PDFs: {e}")
+
+def load_affine_transforms(affine_file_path):
+    """
+    Load affine transformation matrices from the updated.M.txt file.
+    
+    Parameters
+    ----------
+    affine_file_path : str
+        Path to the affine transforms file
+        
+    Returns
+    -------
+    dict
+        Dictionary mapping channel names to 3x3 affine transformation matrices
+    """
+    affine_dict = {}
+    
+    if not os.path.exists(affine_file_path):
+        print(f"Warning: Affine file not found at {affine_file_path}")
+        return affine_dict
+    
+    try:
+        with open(affine_file_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split('\t')
+                if len(parts) >= 7:  # channel + 6 affine parameters
+                    channel = parts[0]
+                    params = [float(x) for x in parts[1:7]]
+                    
+                    # Convert to 3x3 affine matrix
+                    # params are [A, B, dX, D, E, dY] for 2D affine transform
+                    affine_matrix = np.array([
+                        [params[0], params[1], params[2]],
+                        [params[3], params[4], params[5]],
+                        [0, 0, 1]
+                    ])
+                    affine_dict[channel] = affine_matrix
+                    
+    except Exception as e:
+        print(f"Error loading affine transforms: {e}")
+    
+    return affine_dict
+
+def apply_affine_to_image(image, affine_matrix):
+    """
+    Apply affine transformation to an image.
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        2D image to transform
+    affine_matrix : np.ndarray
+        3x3 affine transformation matrix
+        
+    Returns
+    -------
+    np.ndarray
+        Transformed image
+    """
+    try:
+        # Extract 2x3 transformation matrix for skimage
+        transform_matrix = affine_matrix[:2, :]
+        return tf.warp(image, transform_matrix, output_shape=image.shape)
+    except Exception as e:
+        print(f"Error applying affine transform: {e}")
+        return image
+
+def find_corresponding_points(points1, points2, max_distance=6, max_ratio=0.8):
+    """
+    Find corresponding points between two sets using feature matching.
+    
+    Parameters
+    ----------
+    points1 : np.ndarray
+        First set of points (N x 2)
+    points2 : np.ndarray
+        Second set of points (M x 2)
+    max_distance : float, default=6
+        Maximum distance for matching
+    max_ratio : float, default=0.8
+        Maximum ratio for matching
+        
+    Returns
+    -------
+    tuple
+        (corresponding_points1, corresponding_points2, match_indices)
+    """
+    if len(points1) == 0 or len(points2) == 0:
+        return np.array([]), np.array([]), np.array([])
+    
+    try:
+        match_indices = match_descriptors(
+            points1, points2, 
+            max_distance=max_distance, 
+            max_ratio=max_ratio
+        )
+        
+        if len(match_indices) == 0:
+            return np.array([]), np.array([]), np.array([])
+            
+        corresponding_points1 = points1[match_indices[:, 0], :]
+        corresponding_points2 = points2[match_indices[:, 1], :]
+        
+        return corresponding_points1, corresponding_points2, match_indices
+        
+    except Exception as e:
+        print(f"Error finding corresponding points: {e}")
+        return np.array([]), np.array([]), np.array([])
+
+def find_peak_regions(points1, points2, tile_shape, n_bins=50, top_n_points=4):
+    """
+    Find peak regions where point correspondences are concentrated.
+    
+    Parameters
+    ----------
+    points1, points2 : np.ndarray
+        Corresponding point sets
+    tile_shape : tuple
+        (height, width) of the tile
+    n_bins : int, default=50
+        Number of bins for histogram
+    top_n_points : int, default=4
+        Number of peak regions to return
+        
+    Returns
+    -------
+    np.ndarray
+        Peak region coordinates (x, y)
+    """
+    if len(points1) == 0 or len(points2) == 0:
+        return np.array([])
+    
+    if not ADVANCED_QC_AVAILABLE:
+        print("Advanced QC features not available for peak region analysis.")
+        return np.array([])
+    
+    try:
+        # Create 2D histogram of point distributions
+        points_hist_1 = gaussian_filter(
+            np.histogram2d(
+                points1[:, 0], points1[:, 1], 
+                bins=n_bins, 
+                range=[[0, tile_shape[0]], [0, tile_shape[1]]]
+            )[0], 
+            sigma=1
+        )
+        
+        points_hist_2 = gaussian_filter(
+            np.histogram2d(
+                points2[:, 0], points2[:, 1], 
+                bins=n_bins, 
+                range=[[0, tile_shape[0]], [0, tile_shape[1]]]
+            )[0], 
+            sigma=1
+        )
+        
+        # Find peaks in combined histogram
+        combined_hist = points_hist_1 + points_hist_2
+        
+        # Use a simple peak finding approach instead of peak_local_maxima
+        # Find top N points with highest values
+        flat_indices = np.argpartition(combined_hist.ravel(), -top_n_points)[-top_n_points:]
+        peak_coords = np.unravel_index(flat_indices, combined_hist.shape)
+        
+        # Convert bin indices to coordinates
+        x_locs = (np.linspace(0, tile_shape[1], n_bins + 1)[1:] + 
+                  np.linspace(0, tile_shape[1], n_bins + 1)[:-1]) // 2
+        y_locs = (np.linspace(0, tile_shape[0], n_bins + 1)[1:] + 
+                  np.linspace(0, tile_shape[0], n_bins + 1)[:-1]) // 2
+        
+        peaks = np.array([(x_locs[peak_coords[1][i]], y_locs[peak_coords[0][i]]) 
+                         for i in range(len(peak_coords[0]))])
+        return peaks
+        
+    except Exception as e:
+        print(f"Error finding peak regions: {e}")
+        return np.array([])
 
 def make_and_save_qc_plots(dataset_path, corrected_path):
     """
@@ -49,12 +327,14 @@ def make_and_save_qc_plots(dataset_path, corrected_path):
 
         #pairs_of_channels = [[488,515], [515, 561]...]
         #conver to channels = [[2,4], [4, 3], [3,1]]
-        pairs_of_channels = []
+        new_pairs_of_channels = []
         for c1, c2 in pairs_of_channels:
             #get index of list_of_wavelengths
-            c1_index = next((i for i, x in enumerate(list_of_channels) if x.value == c1), None)
-            c2_index = next((i for i, x in enumerate(list_of_channels) if x.value == c2), None)
-            pairs_of_channels.append([list_of_channels[c1_index], list_of_channels[c2_index]])
+            c1_index = next((i for i, x in enumerate(list_of_channels) if hasattr(x, 'value') and x.value == c1), None)
+            c2_index = next((i for i, x in enumerate(list_of_channels) if hasattr(x, 'value') and x.value == c2), None)
+            if c1_index is not None and c2_index is not None:
+                new_pairs_of_channels.append([list_of_channels[c1_index], list_of_channels[c2_index]])
+        pairs_of_channels = new_pairs_of_channels
     else:
     #remove 405 from list of channels 
         if '405' in list_of_channels:
@@ -620,7 +900,7 @@ def plot_spots_on_image_zoomed(image, spots, zoom_factor=0.25, spot_size=20, spo
     plt.colorbar(im2, ax=ax2, label='Intensity')
     
     # Show the zoomed area on the full image
-    rect = plt.Rectangle((x_start, y_start), x_end-x_start, y_end-y_start, 
+    rect = Rectangle((x_start, y_start), x_end-x_start, y_end-y_start, 
                          fill=False, ec='yellow', lw=2)
     ax1.add_patch(rect)
     
@@ -698,13 +978,357 @@ def plot_two_sets_of_spots_on_image_zoomed(image, spots1, spots2=None, zoom_fact
     plt.colorbar(im2, ax=ax2, label='Intensity')
     
     # Show the zoomed area on the full image
-    rect = plt.Rectangle((x_start, y_start), x_end-x_start, y_end-y_start, 
+    rect = Rectangle((x_start, y_start), x_end-x_start, y_end-y_start, 
                          fill=False, ec='yellow', lw=2)
     ax1.add_patch(rect)
     
     plt.tight_layout()
     #plt.show()
     plt.close()
+
+def create_distance_plots(points1, points2, affine1, affine2, ax_hist, ax_scatter, title):
+    """
+    Create distance comparison plots (histogram and scatter) for point correspondences.
+    
+    Parameters
+    ----------
+    points1, points2 : np.ndarray
+        Corresponding point sets
+    affine1, affine2 : np.ndarray
+        Affine transformation matrices
+    ax_hist, ax_scatter : matplotlib.axes.Axes
+        Axes for histogram and scatter plots
+    title : str
+        Plot title
+    """
+    if len(points1) == 0 or len(points2) == 0:
+        ax_hist.set_xticks([])
+        ax_hist.set_yticks([])
+        ax_scatter.set_xticks([])
+        ax_scatter.set_yticks([])
+        return
+    
+    try:
+        # Transform points using affine matrices
+        homogeneous_points1 = np.vstack([points1.T, np.ones(points1.shape[0])])
+        transformed_points1 = (affine1 @ homogeneous_points1)[:2, :].T.astype(int)
+        
+        homogeneous_points2 = np.vstack([points2.T, np.ones(points2.shape[0])])
+        transformed_points2 = (affine2 @ homogeneous_points2)[:2, :].T.astype(int)
+        
+        # Calculate distances
+        distance_pre = numpy.linalg.norm(points1 - points2, axis=1)
+        distance_post = numpy.linalg.norm(transformed_points1 - transformed_points2, axis=1)
+        
+        # Create histogram
+        ax_hist.hist(distance_pre, 10, alpha=0.5, label='pre-correction', color='r')
+        ax_hist.hist(distance_post, 10, alpha=0.5, label='post-correction', color='g')
+        ax_hist.legend()
+        ax_hist.set_xlabel('distance (pixels)', fontsize=14)
+        ax_hist.set_ylabel('number of points', fontsize=14)
+        ax_hist.set_title(title, fontsize=12)
+        
+        # Create scatter plot
+        max_dist = np.max(np.hstack([distance_pre, distance_post]))
+        ax_scatter.scatter(distance_pre, distance_post)
+        ax_scatter.plot([0, max_dist], [0, max_dist], 'k--', alpha=0.5)
+        ax_scatter.set_xlabel('distance pre-correction (pixels)', fontsize=12)
+        ax_scatter.set_ylabel('distance post-correction (pixels)', fontsize=12)
+        ax_scatter.set_title(title, fontsize=12)
+        
+    except Exception as e:
+        print(f"Error creating distance plots: {e}")
+
+def create_comparison_subplot(tile1_clip, tile2_clip, tile1_transformed_clip, tile2_transformed_clip, 
+                            width, c1, c2, x_loc, y_loc, z_loc, tilename, output_dir_png, output_dir_pdf):
+    """
+    Create before/after comparison subplot for a specific region.
+    
+    Parameters
+    ----------
+    tile1_clip, tile2_clip : np.ndarray
+        Clipped regions from original tiles
+    tile1_transformed_clip, tile2_transformed_clip : np.ndarray
+        Clipped regions from transformed tiles
+    width : int
+        Width of the clipped region
+    c1, c2 : str
+        Channel names
+    x_loc, y_loc, z_loc : int
+        Location coordinates
+    tilename : str
+        Tile identifier
+    output_dir_png, output_dir_pdf : str
+        Output directories for PNG and PDF files
+    """
+    try:
+        fig = plt.figure(figsize=(10, 5))
+        gs = fig.add_gridspec(1, 2, wspace=0.1, hspace=0.1)
+        
+        # Calculate intensity ranges
+        vmin_1 = int(np.percentile(tile1_clip, 10))
+        vmax_1 = int(np.percentile(tile1_clip, 99.99))
+        vmin_2 = int(np.percentile(tile2_clip, 10))
+        vmax_2 = int(np.percentile(tile2_clip, 99.99))
+        
+        # Pre-correction subplot
+        ax = fig.add_subplot(gs[0])
+        img = np.zeros((tile1_clip.shape[0], tile1_clip.shape[1], 3), dtype=np.float32)
+        img[:, :, 0] = np.clip((tile1_clip.astype(np.float32) - vmin_1) / (vmax_1 - vmin_1), 0, 1)
+        img[:, :, 1] = np.clip((tile2_clip.astype(np.float32) - vmin_2) / (vmax_2 - vmin_2), 0, 1)
+        ax.imshow(img, aspect='auto')
+        ax.text(0, 0, 'Pre-correction', color='w', fontsize=20, 
+                horizontalalignment='left', verticalalignment='top')
+        ax.axis('off')
+        
+        # Post-correction subplot
+        ax = fig.add_subplot(gs[1])
+        vmin_1_trans = np.percentile(tile1_transformed_clip, 10)
+        vmax_1_trans = np.percentile(tile1_transformed_clip, 99.99)
+        vmin_2_trans = np.percentile(tile2_transformed_clip, 10)
+        vmax_2_trans = np.percentile(tile2_transformed_clip, 99.99)
+        
+        img = np.zeros((tile1_transformed_clip.shape[0], tile1_transformed_clip.shape[1], 3), dtype=np.float32)
+        img[:, :, 0] = np.clip((tile1_transformed_clip.astype(np.float32) - vmin_1_trans) / (vmax_1_trans - vmin_1_trans), 0, 1)
+        img[:, :, 1] = np.clip((tile2_transformed_clip.astype(np.float32) - vmin_2_trans) / (vmax_2_trans - vmin_2_trans), 0, 1)
+        ax.imshow(img, aspect='auto')
+        ax.text(0, 0, 'Post-correction', color='w', fontsize=20, 
+                horizontalalignment='left', verticalalignment='top')
+        ax.axis('off')
+        
+        # Title and save
+        tile_id = '_'.join(tilename.split('/')[-1].split('_')[1:5]).replace('_Y', '-Y').replace('_0', '')
+        plt.suptitle(f'{c1.replace("CH_", "")} vs. {c2.replace("CH_", "")}, tile = {tile_id} - x={x_loc}, y={y_loc}, z={z_loc}', 
+                    y=0.95, fontsize=18)
+        
+        # Save PNG
+        png_filename = f"{c1.replace('CH_', '')}vs{c2.replace('CH_', '')}_{tilename.split('/')[-1][:18]}_x{x_loc}_y{y_loc}_z{z_loc}.png"
+        fig.savefig(os.path.join(output_dir_png, png_filename), dpi=200, bbox_inches='tight')
+        
+        # Save PDF
+        pdf_filename = f"{c1.replace('CH_', '')}vs{c2.replace('CH_', '')}_{tilename.split('/')[-1][:18]}_x{x_loc}_y{y_loc}_z{z_loc}.pdf"
+        with PdfPages(os.path.join(output_dir_pdf, pdf_filename)) as pdf:
+            pdf.savefig(fig, bbox_inches='tight')
+        
+        plt.close()
+        
+    except Exception as e:
+        print(f"Error creating comparison subplot: {e}")
+
+def make_comprehensive_qc_plots(data_path, scratch_root, output_root="/results/comprehensive_qc"):
+    """
+    Create comprehensive QC plots comparing pre- and post-correction alignment.
+    
+    This function implements the full QC analysis from the research notebook,
+    including:
+    - Distance histograms and scatter plots
+    - Before/after image comparisons
+    - Peak region analysis
+    - PDF report generation
+    
+    Parameters
+    ----------
+    data_path : str
+        Path to the dataset directory
+    scratch_root : str
+        Path to scratch directory containing affine transforms
+    output_root : str, default="/results/comprehensive_qc"
+        Root directory for QC output files
+        
+    Returns
+    -------
+    None
+        QC plots and reports are saved to disk
+    """
+    try:
+        # Create output directories
+        output_dir = output_root
+        output_dir_png = os.path.join(output_dir, "png_files")
+        output_dir_pdf = os.path.join(output_dir, "pdf_files")
+        output_dir_json = os.path.join(output_dir, "json_files")
+        
+        for dir_path in [output_dir, output_dir_png, output_dir_pdf, output_dir_json]:
+            os.makedirs(dir_path, exist_ok=True)
+        
+        # Load affine transforms
+        affine_file = os.path.join(scratch_root, 'updated.M.txt')
+        affine_transforms = load_affine_transforms(affine_file)
+        
+        if not affine_transforms:
+            print(f"No affine transforms found in {affine_file}")
+            return
+        
+        # Get channel information
+        channels = list(affine_transforms.keys())
+        if '405' in channels:
+            channels.remove('405')  # Remove reference channel
+        
+        channel_pairs = [(channels[i], channels[i+1]) for i in range(len(channels)-1)]
+        
+        print(f"Processing {len(channel_pairs)} channel pairs: {channel_pairs}")
+        print(f"Found affine transforms for channels: {channels}")
+        
+        # Get tiles from one channel to determine structure
+        sample_tiles = get_tiles_of_channel(data_path, channels[0])
+        if not sample_tiles:
+            print(f"No tiles found for channel {channels[0]} in {data_path}")
+            return
+        
+        # Process subset of tiles for QC
+        tiles_to_check = QC_CONFIG['tiles_to_check']
+        tiles_to_process = min(len(sample_tiles), max(tiles_to_check) + 1)
+        tiles_to_check = tiles_to_check[tiles_to_check < tiles_to_process]
+        
+        print(f"Processing {len(tiles_to_check)} tiles: {tiles_to_check}")
+        
+        # Get tile dimensions
+        sample_tile_path = sample_tiles[0]
+        tile_zarr = da.from_zarr(sample_tile_path, QC_CONFIG['pyramid_level'])
+        tile_shape = tile_zarr.shape[2:]  # Assuming 5D zarr: (C, T, Z, Y, X)
+        
+        # Configure Z planes to sample
+        thickness = tile_shape[0] // 3
+        spacing = tile_shape[0] // 5
+        num_planes = int(np.ceil(thickness / spacing))
+        planes = np.arange((tile_shape[0] - thickness) // 2, (tile_shape[0] + thickness) // 2, spacing)
+        
+        print(f"Tile shape: {tile_shape}, Processing {len(planes)} Z planes: {planes}")
+        
+        # Create distance plot figures
+        fig_dist, axs_dist = plt.subplots(
+            num_planes * len(tiles_to_check), len(channel_pairs),
+            figsize=(5 * len(channel_pairs), 5 * len(tiles_to_check) * num_planes)
+        )
+        fig_dist_scatter, axs_dist_scatter = plt.subplots(
+            num_planes * len(tiles_to_check), len(channel_pairs),
+            figsize=(5 * len(channel_pairs), 5 * len(tiles_to_check) * num_planes)
+        )
+        
+        # Ensure axs are 2D arrays
+        if len(channel_pairs) == 1:
+            axs_dist = axs_dist.reshape(-1, 1)
+            axs_dist_scatter = axs_dist_scatter.reshape(-1, 1)
+        if num_planes * len(tiles_to_check) == 1:
+            axs_dist = axs_dist.reshape(1, -1)
+            axs_dist_scatter = axs_dist_scatter.reshape(1, -1)
+        
+        # Process each tile
+        for i_tile, tile_idx in enumerate(tiles_to_check):
+            print(f"Processing tile {tile_idx + 1}/{len(sample_tiles)}")
+            
+            # Process each channel pair
+            for i_pair, (c1, c2) in enumerate(channel_pairs):
+                print(f"  Processing pair {c1} vs {c2}")
+                
+                # Load tiles for both channels
+                tiles_c1 = get_tiles_of_channel(data_path, c1)
+                tiles_c2 = get_tiles_of_channel(data_path, c2)
+                
+                if tile_idx >= len(tiles_c1) or tile_idx >= len(tiles_c2):
+                    print(f"  Skipping - insufficient tiles for channels {c1}, {c2}")
+                    continue
+                
+                tilename_1 = tiles_c1[tile_idx]
+                tilename_2 = tiles_c2[tile_idx]
+                
+                # Load tile data
+                tile_1_zarr = da.from_zarr(tilename_1, QC_CONFIG['pyramid_level'])[0, 0, ...]
+                tile_2_zarr = da.from_zarr(tilename_2, QC_CONFIG['pyramid_level'])[0, 0, ...]
+                
+                tile_1 = tile_1_zarr[planes, ...].compute()
+                tile_2 = tile_2_zarr[planes, ...].compute()
+                
+                # Apply affine transforms
+                affine_1 = affine_transforms[c1]
+                affine_2 = affine_transforms[c2]
+                
+                tile_1_transformed = np.zeros_like(tile_1, dtype=np.float32)
+                tile_2_transformed = np.zeros_like(tile_2, dtype=np.float32)
+                
+                for i_plane, plane in enumerate(planes):
+                    tile_1_transformed[i_plane, ...] = apply_affine_to_image(tile_1[i_plane, ...], affine_1)
+                    tile_2_transformed[i_plane, ...] = apply_affine_to_image(tile_2[i_plane, ...], affine_2)
+                
+                # Process each Z plane
+                peaks = {}
+                for i_plane, plane in enumerate(planes):
+                    # Detect points
+                    points_1 = get_top_points(tile_1[i_plane, ...], QC_CONFIG['dot_num'], QC_CONFIG['dot_threshold'])
+                    points_2 = get_top_points(tile_2[i_plane, ...], QC_CONFIG['dot_num'], QC_CONFIG['dot_threshold'])
+                    
+                    # Find correspondences
+                    correspond_points_1, correspond_points_2, _ = find_corresponding_points(points_1, points_2)
+                    
+                    # Create distance plots
+                    ax_row = i_plane + num_planes * i_tile
+                    title = f'{c1.replace("CH_", "")} vs. {c2.replace("CH_", "")}, tile {tile_idx} - z={plane}'
+                    
+                    create_distance_plots(
+                        correspond_points_1, correspond_points_2, affine_1, affine_2,
+                        axs_dist[ax_row, i_pair], axs_dist_scatter[ax_row, i_pair], title
+                    )
+                    
+                    # Find peak regions for detailed analysis
+                    if len(correspond_points_1) > 0:
+                        peaks[plane] = find_peak_regions(
+                            correspond_points_1, correspond_points_2, tile_shape[1:],
+                            QC_CONFIG['n_bins'], QC_CONFIG['top_n_points']
+                        )
+                    else:
+                        peaks[plane] = np.array([])
+                
+                # Create detailed comparison plots for peak regions
+                for plane, peak_regions in peaks.items():
+                    i_plane = list(peaks.keys()).index(plane)
+                    
+                    for i_point in range(len(peak_regions)):
+                        x_loc = int(peak_regions[i_point, 0])
+                        y_loc = int(peak_regions[i_point, 1])
+                        z_loc = int(plane)
+                        
+                        # Extract regions around peak
+                        width = QC_CONFIG['width']
+                        y_start, y_end = max(0, y_loc - width), min(tile_shape[1], y_loc + width)
+                        x_start, x_end = max(0, x_loc - width), min(tile_shape[2], x_loc + width)
+                        
+                        tile_1_clip = tile_1[i_plane, y_start:y_end, x_start:x_end]
+                        tile_2_clip = tile_2[i_plane, y_start:y_end, x_start:x_end]
+                        tile_1_transformed_clip = tile_1_transformed[i_plane, y_start:y_end, x_start:x_end]
+                        tile_2_transformed_clip = tile_2_transformed[i_plane, y_start:y_end, x_start:x_end]
+                        
+                        # Create comparison subplot
+                        create_comparison_subplot(
+                            tile_1_clip, tile_2_clip, tile_1_transformed_clip, tile_2_transformed_clip,
+                            width, c1, c2, x_loc, y_loc, z_loc, tilename_1, output_dir_png, output_dir_pdf
+                        )
+        
+        # Save distance plot figures
+        fig_dist.suptitle('Distance Histograms - Camera Alignment QC', fontsize=16)
+        fig_dist.savefig(os.path.join(output_dir, 'distance_histograms.png'), dpi=300, bbox_inches='tight')
+        plt.close(fig_dist)
+        
+        fig_dist_scatter.suptitle('Distance Scatter Plots - Camera Alignment QC', fontsize=16)
+        fig_dist_scatter.savefig(os.path.join(output_dir, 'distance_scatter.png'), dpi=300, bbox_inches='tight')
+        plt.close(fig_dist_scatter)
+        
+        # Merge PDFs for each channel pair
+        for c1, c2 in channel_pairs:
+            pdf_pattern = f"{c1.replace('CH_', '')}vs{c2.replace('CH_', '')}"
+            pdf_list = [
+                os.path.join(output_dir_pdf, f) for f in os.listdir(output_dir_pdf)
+                if f.endswith('.pdf') and pdf_pattern in f
+            ]
+            
+            if pdf_list:
+                merged_pdf_path = os.path.join(output_dir, f"{pdf_pattern}_merged.pdf")
+                merge_pdfs(pdf_list, merged_pdf_path)
+        
+        print(f"QC analysis complete. Results saved to: {output_dir}")
+        
+    except Exception as e:
+        print(f"Error in comprehensive QC analysis: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
 
