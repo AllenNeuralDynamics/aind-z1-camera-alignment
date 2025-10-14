@@ -443,10 +443,13 @@ def get_tiles_of_channel(dataset_path, channel):
     """
     Get list of zarr tile files for a specific channel.
     
+    Handles both local filesystem paths and S3 URIs. Also checks for neuroglancer
+    JSON files which may contain tile information organized by channel.
+    
     Parameters
     ----------
     dataset_path : str
-        Path to the dataset directory
+        Path to the dataset directory (local or S3 URI)
     channel : str
         Channel identifier to filter tiles by
         
@@ -455,7 +458,28 @@ def get_tiles_of_channel(dataset_path, channel):
     list[str]
         List of file paths to zarr tiles for the specified channel
     """
-    list_of_tiles = list(glob(f'{dataset_path}/*{channel}.zarr'))
+    # Import here to avoid circular dependency
+    from utils import list_zarr_tiles_from_s3
+    
+    # Check if it's an S3 path
+    if dataset_path.startswith('s3://'):
+        # First try to find neuroglancer JSON files in /data/
+        ng_json_files = find_neuroglancer_json_files('/data/')
+        if ng_json_files:
+            # Try to extract tile info from neuroglancer JSON
+            for json_file in ng_json_files:
+                ng_data = load_neuroglancer_json(json_file)
+                if ng_data:
+                    tile_info = extract_tile_info_from_neuroglancer(ng_data, dataset_path)
+                    if tile_info and channel in tile_info:
+                        return tile_info[channel]
+        
+        # Fallback: Get all tiles from S3 and filter by channel
+        all_tiles = list_zarr_tiles_from_s3(dataset_path)
+        list_of_tiles = [t for t in all_tiles if f'{channel}.zarr' in t]
+    else:
+        # Local filesystem
+        list_of_tiles = list(glob(f'{dataset_path}/*{channel}.zarr'))
 
     return list_of_tiles
 
@@ -463,17 +487,45 @@ def get_list_of_tiles(dataset_path):
     """
     Get list of all zarr tile files in a dataset directory.
     
+    Handles both local filesystem paths and S3 URIs. Also checks for neuroglancer
+    JSON files which may contain tile information.
+    
     Parameters
     ----------
     dataset_path : str
-        Path to the dataset directory
+        Path to the dataset directory (local or S3 URI)
         
     Returns
     -------
     list[str]
         List of file paths to all zarr tiles in the dataset
     """
-    list_of_tiles = list(glob(f'{dataset_path}/*.zarr'))
+    # Import here to avoid circular dependency
+    from utils import list_zarr_tiles_from_s3
+    
+    # First try to find neuroglancer JSON files in /data/ if dealing with S3 paths
+    if dataset_path.startswith('s3://'):
+        ng_json_files = find_neuroglancer_json_files('/data/')
+        if ng_json_files:
+            # Try to extract tile info from neuroglancer JSON
+            for json_file in ng_json_files:
+                ng_data = load_neuroglancer_json(json_file)
+                if ng_data:
+                    tile_info = extract_tile_info_from_neuroglancer(ng_data, dataset_path)
+                    if tile_info:
+                        # Flatten all tiles from all channels
+                        all_tiles = []
+                        for tiles in tile_info.values():
+                            all_tiles.extend(tiles)
+                        if all_tiles:
+                            return all_tiles
+        
+        # Fallback to S3 listing if neuroglancer approach didn't work
+        list_of_tiles = list_zarr_tiles_from_s3(dataset_path)
+    else:
+        # Local filesystem
+        list_of_tiles = list(glob(f'{dataset_path}/*.zarr'))
+    
     return list_of_tiles
 
 def load_raw_zarr_slice(zarr_path, z_index, level = '0'):
@@ -1331,6 +1383,137 @@ def make_comprehensive_qc_plots(data_path, scratch_root, output_root="/results/c
         print(f"Error in comprehensive QC analysis: {e}")
         import traceback
         traceback.print_exc()
+
+def load_neuroglancer_json(json_path):
+    """
+    Load a neuroglancer JSON file.
+    
+    Parameters
+    ----------
+    json_path : str
+        Path to the neuroglancer JSON file
+        
+    Returns
+    -------
+    dict
+        Parsed JSON data
+    """
+    try:
+        with open(json_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading neuroglancer JSON from {json_path}: {e}")
+        return None
+
+def extract_channels_from_neuroglancer(neuroglancer_data):
+    """
+    Extract channel information from neuroglancer JSON data.
+    
+    Parameters
+    ----------
+    neuroglancer_data : dict
+        Parsed neuroglancer JSON data
+        
+    Returns
+    -------
+    list[str]
+        List of channel identifiers found in the data
+    """
+    channels = []
+    try:
+        if 'layers' in neuroglancer_data:
+            for layer in neuroglancer_data['layers']:
+                if 'name' in layer:
+                    # Extract channel from layer name (e.g., "488", "515", "561")
+                    layer_name = layer['name']
+                    channels.append(layer_name)
+        return channels
+    except Exception as e:
+        print(f"Error extracting channels from neuroglancer data: {e}")
+        return []
+
+def extract_tile_info_from_neuroglancer(neuroglancer_data, data_path):
+    """
+    Extract tile information from neuroglancer JSON data.
+    
+    Parameters
+    ----------
+    neuroglancer_data : dict
+        Parsed neuroglancer JSON data
+    data_path : str
+        Base path to the data (used to construct full tile paths)
+        
+    Returns
+    -------
+    dict
+        Dictionary mapping channel names to lists of tile paths
+    """
+    tile_info = {}
+    try:
+        if 'layers' in neuroglancer_data:
+            for layer in neuroglancer_data['layers']:
+                if 'name' in layer and 'source' in layer:
+                    channel = layer['name']
+                    # Extract tile paths from source
+                    source = layer['source']
+                    if isinstance(source, str):
+                        # Handle single source
+                        if source.startswith('zarr://'):
+                            tile_path = source.replace('zarr://', '')
+                            # Construct full path
+                            if not tile_path.startswith('s3://') and not tile_path.startswith('/'):
+                                tile_path = os.path.join(data_path, tile_path)
+                            tile_info.setdefault(channel, []).append(tile_path)
+                    elif isinstance(source, dict):
+                        # Handle source dictionary with url
+                        if 'url' in source:
+                            url = source['url']
+                            if url.startswith('zarr://'):
+                                tile_path = url.replace('zarr://', '')
+                                if not tile_path.startswith('s3://') and not tile_path.startswith('/'):
+                                    tile_path = os.path.join(data_path, tile_path)
+                                tile_info.setdefault(channel, []).append(tile_path)
+        return tile_info
+    except Exception as e:
+        print(f"Error extracting tile info from neuroglancer data: {e}")
+        return {}
+
+def find_neuroglancer_json_files(data_dir='/data/'):
+    """
+    Find neuroglancer JSON files in the data directory.
+    
+    Parameters
+    ----------
+    data_dir : str, default='/data/'
+        Directory to search for neuroglancer JSON files
+        
+    Returns
+    -------
+    list[str]
+        List of paths to neuroglancer JSON files
+    """
+    json_files = []
+    try:
+        # Look for JSON files that might be neuroglancer configs
+        # Common patterns: neuroglancer.json, ng.json, precomputed*.json, etc.
+        patterns = ['neuroglancer.json', 'ng.json', '*neuroglancer*.json', 'precomputed*.json']
+        
+        for pattern in patterns:
+            json_files.extend(glob(os.path.join(data_dir, pattern)))
+            json_files.extend(glob(os.path.join(data_dir, '**', pattern), recursive=True))
+        
+        # Remove duplicates
+        json_files = list(set(json_files))
+        
+        if json_files:
+            print(f"Found neuroglancer JSON files: {json_files}")
+        else:
+            print(f"No neuroglancer JSON files found in {data_dir}")
+            
+        return json_files
+    except Exception as e:
+        print(f"Error finding neuroglancer JSON files: {e}")
+        return []
 
 if __name__ == "__main__":
 
