@@ -1,11 +1,12 @@
+import argparse
 import pathlib
 import logging
-from cam_affine_cuda import main as run_2d_camera_correction
 import os
+import sys
 from typing import List, Dict, Any
-import json
-import s3fs
-import glob
+
+from cam_affine_cuda import main as run_2d_camera_correction
+import qc_results
 from utils import (
     load_data_description,
     list_zarr_tiles_from_s3,
@@ -87,9 +88,82 @@ def process_zarr_datasets():
 
 
 
-if __name__ == "__main__":
+def run_camera_alignment_qc_only() -> bool:
+    """Execute QC plot generation without running alignment."""
+    results_root = pathlib.Path("/results")
+    results_root.mkdir(parents=True, exist_ok=True)
+
     try:
-        process_zarr_datasets()
-    except Exception as e:
-        logger.error(f"Error during execution: {str(e)}")
+        dataset_name = load_data_description()
+    except (FileNotFoundError, RuntimeError) as exc:
+        logger.error(f"Failed to load dataset configuration: {exc}")
+        return False
+
+    s3_path = f"s3://aind-open-data/{dataset_name}/image_radial_correction/"
+    logger.info(f"Preparing QC generation for dataset: {dataset_name}")
+
+    try:
+        zarr_tiles = list_zarr_tiles_from_s3(s3_path)
+    except RuntimeError as exc:
+        logger.error(f"Failed to list zarr tiles: {exc}")
+        return False
+
+    if not zarr_tiles:
+        logger.error(f"No zarr tiles found at {s3_path}")
+        return False
+
+    qc_plotter = getattr(qc_results, "make_comprehensive_qc_plots", None)
+
+    if qc_plotter is None:
+        logger.error("QC plotting function make_comprehensive_qc_plots is not available.")
+        return False
+
+    qc_output_dir = results_root / dataset_name / "camera_alignment_qc"
+    qc_output_dir.mkdir(parents=True, exist_ok=True)
+
+    scratch_root = "/scratch/"
+
+    logger.info("Generating camera alignment QC plots only (no alignment run).")
+    try:
+        qc_plotter(
+            s3_path,
+            scratch_root,
+            output_root=str(qc_output_dir),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"QC plot generation failed: {exc}")
+        logger.debug("QC failure details", exc_info=True)
+        return False
+
+    logger.info(f"QC plots saved to: {qc_output_dir}")
+    return True
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments for capsule execution."""
+    parser = argparse.ArgumentParser(description="Run camera alignment capsule targets")
+    parser.add_argument(
+        "target",
+        nargs="?",
+        default="camera_alignment",
+        choices=("camera_alignment", "camera_alignment_qc"),
+        help="Execution target: camera alignment pipeline or QC-only",
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    cli_args = parse_args()
+
+    try:
+        if cli_args.target == "camera_alignment_qc":
+            success = run_camera_alignment_qc_only()
+        else:
+            success = process_zarr_datasets()
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"Error during execution: {exc}")
+        logger.debug("Execution failure details", exc_info=True)
         raise
+
+    if not success:
+        sys.exit(1)
