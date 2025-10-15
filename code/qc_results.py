@@ -175,7 +175,7 @@ def apply_affine_to_image(image, affine_matrix):
     """
     try:
         # Extract 2x3 transformation matrix for skimage
-        transform_matrix = affine_matrix[:2, :]
+        transform_matrix = affine_matrix#[:2, :]
         return tf.warp(image, transform_matrix, output_shape=image.shape)
     except Exception as e:
         print(f"Error applying affine transform: {e}")
