@@ -1212,7 +1212,7 @@ def make_comprehensive_qc_plots(data_path, scratch_root, output_root="/results/c
             print(f"No affine transforms found in {affine_file}")
             return
         
-        # Get channel information
+        # Get channel information TODO fix this to get ALL channels not just the ones that have transforms applied
         channels = list(affine_transforms.keys())
         if '405' in channels:
             channels.remove('405')  # Remove reference channel
@@ -1454,6 +1454,7 @@ def extract_tile_info_from_neuroglancer(neuroglancer_data, data_path):
             for layer in neuroglancer_data['layers']:
                 if 'name' in layer and 'source' in layer:
                     channel = layer['name']
+                    channel = channel.lstrip('CH_')
                     # Extract tile paths from source
                     source = layer['source']
                     if isinstance(source, str):
@@ -1464,16 +1465,21 @@ def extract_tile_info_from_neuroglancer(neuroglancer_data, data_path):
                             if not tile_path.startswith('s3://') and not tile_path.startswith('/'):
                                 tile_path = os.path.join(data_path, tile_path)
                             tile_info.setdefault(channel, []).append(tile_path)
-                    elif isinstance(source, dict):
+                    elif isinstance(source, list):
                         # Handle source dictionary with url
-                        if 'url' in source:
-                            url = source['url']
-                            if url.startswith('zarr://'):
-                                tile_path = url.replace('zarr://', '')
-                                if not tile_path.startswith('s3://') and not tile_path.startswith('/'):
-                                    tile_path = os.path.join(data_path, tile_path)
-                                tile_info.setdefault(channel, []).append(tile_path)
-        return tile_info
+                        for src in source: 
+                            if isinstance(src, dict):
+                                if 'url' in src:
+                                    url = src['url']
+                                    if url.startswith('zarr://'):
+                                        tile_path = url.replace('zarr://', '')
+                                        if not tile_path.startswith('s3://') and not tile_path.startswith('/'):
+                                            tile_path = os.path.join(data_path, tile_path)
+                                        tile_info.setdefault(channel, []).append(tile_path)
+                                    elif url.startswith('s3://'):
+                                        tile_path = url
+                                        tile_info.setdefault(channel, []).append(tile_path)
+            return tile_info
     except Exception as e:
         print(f"Error extracting tile info from neuroglancer data: {e}")
         return {}
@@ -1496,11 +1502,11 @@ def find_neuroglancer_json_files(data_dir='/data/'):
     try:
         # Look for JSON files that might be neuroglancer configs
         # Common patterns: neuroglancer.json, ng.json, precomputed*.json, etc.
-        patterns = ['neuroglancer.json', 'ng.json', '*neuroglancer*.json', 'precomputed*.json']
+        patterns = ['*ng.json', '*neuroglancer*.json']
         
         for pattern in patterns:
             json_files.extend(glob(os.path.join(data_dir, pattern)))
-            json_files.extend(glob(os.path.join(data_dir, '**', pattern), recursive=True))
+            # json_files.extend(glob(os.path.join(data_dir, '**', pattern), recursive=True)) #really slows things down
         
         # Remove duplicates
         json_files = list(set(json_files))
@@ -1517,6 +1523,7 @@ def find_neuroglancer_json_files(data_dir='/data/'):
 
 if __name__ == "__main__":
 
-    raw_dataset_path = '/root/capsule/data/HCR_BL6-001_2023-06-19_00-01-00/SPIM.ome.zarr/'
-    corrected_path = '/root/capsule/scratch/HCR_BL6-001_2023-06-19_00-01-00/affine.ome.zarr'
-    make_and_save_qc_plots(raw_dataset_path, corrected_path)
+    raw_dataset_path = '/root/capsule/data/HCR_000000-s43_2025-07-24_13-00-00_processed_2025-10-02_06-30-20/image_radial_correction'
+    corrected_path = 's3://aind-open-data/HCR_000000-s43_2025-07-24_13-00-00_processed_2025-10-02_06-30-20/image_radial_correction'
+    scratch_root = '/scratch'
+    make_comprehensive_qc_plots(corrected_path, scratch_root, output_root="/results/comprehensive_qc")
