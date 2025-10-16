@@ -51,7 +51,7 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_DATA_DIR = Path("/root/capsule/data")
 DEFAULT_SCRATCH_ROOT = Path("/root/capsule/scratch")
-DEFAULT_TEMPLATE_PATH = Path("/root/capsule/code/ng_template.json")
+DEFAULT_TEMPLATE_PATH = Path("/root/capsule/data/camera_aligned_neuroglancer.json")
 AIND_S3_PREFIX = "s3://aind-open-data"
 
 
@@ -203,7 +203,7 @@ def _extract_affine_metadata(
         affine = matrix[2:, 2:]
         affine[:, 3] += affine[:, 0]
         affine = affine[:, 1:]
-        affine[1:, -1] -= offset
+        affine[1:, -1] -= offset[0]
         affine = affine[::-1, :]
         affine[:, :2] = affine[:, 1::-1]
         affine_matrices[channel] = affine
@@ -798,7 +798,7 @@ def generate_camera_alignment_qc(
         LOGGER.info("Processing camera-alignment QC for dataset %s", dataset_name)
 
         cc_json = dataset_path / "camera_aligned_neuroglancer.json"
-        rc_json = dataset_path / "radial_correction_neuroglancer.json"
+        rc_json = dataset_path / "radially_corrected_neuroglancer.json"
 
         if not cc_json.exists() or not rc_json.exists():
             raise FileNotFoundError(
