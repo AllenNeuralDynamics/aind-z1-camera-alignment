@@ -427,8 +427,8 @@ def create_distance_plots(
         transformed_1 = (affine_1 @ homogeneous_1)[:2, :].T.astype(int)
         transformed_2 = (affine_2 @ homogeneous_2)[:2, :].T.astype(int)
 
-        distance_pre = np.linalg.norm(points_1 - points_2, axis=1)
-        distance_post = np.linalg.norm(transformed_1 - transformed_2, axis=1)
+        distance_pre = np.linalg.norm(points_2- points_1, axis=1)
+        distance_post = np.linalg.norm(transformed_2 - transformed_1, axis=1)
 
         ax_hist.hist(distance_pre, 10, alpha=0.5,
                      label="pre-correction", color="r")
@@ -438,9 +438,9 @@ def create_distance_plots(
         ax_hist.set_xlabel("distance (pixels)")
         ax_hist.set_ylabel("number of points")
         ax_hist.set_title(title)
-
+nmjhhhhh 
         max_dist = float(np.max(np.hstack([distance_pre, distance_post])))
-        ax_scatter.scatter(distance_pre, distance_post)
+        ax_scatter.scatter(distance_post,distance_pre )
         ax_scatter.plot([0, max_dist], [0, max_dist], "k--", alpha=0.5)
         ax_scatter.set_xlabel("distance pre-correction (pixels)")
         ax_scatter.set_ylabel("distance post-correction (pixels)")
