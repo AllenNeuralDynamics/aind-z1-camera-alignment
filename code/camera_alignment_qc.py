@@ -391,44 +391,55 @@ def _generate_histogram_axes(
     )
 
 
-def _update_histograms(
+def create_distance_plots(
+    points_1: np.ndarray,
+    points_2: np.ndarray,
+    affine_1: np.ndarray,
+    affine_2: np.ndarray,
     ax_hist: plt.Axes,
     ax_scatter: plt.Axes,
     title: str,
-    correspond_points_1: np.ndarray,
-    correspond_points_2: np.ndarray,
-    affine_1: np.ndarray,
-    affine_2: np.ndarray,
 ) -> None:
-    if correspond_points_1.size == 0 or correspond_points_2.size == 0:
+    """Replicate the scientist's distance histogram and scatter plots."""
+
+    if points_1.size == 0 or points_2.size == 0:
         ax_hist.set_xticks([])
         ax_hist.set_yticks([])
         ax_scatter.set_xticks([])
         ax_scatter.set_yticks([])
         return
 
-    homogeneous_1 = np.vstack([correspond_points_1.T, np.ones(correspond_points_1.shape[0])])
-    homogeneous_2 = np.vstack([correspond_points_2.T, np.ones(correspond_points_2.shape[0])])
+    try:
+        homogeneous_1 = np.concatenate(
+            (points_1.T, np.ones((1, points_1.shape[0]))),
+            axis=0,
+        )
+        homogeneous_2 = np.concatenate(
+            (points_2.T, np.ones((1, points_2.shape[0]))),
+            axis=0,
+        )
 
-    transformed_1 = (affine_1 @ homogeneous_1)[:2, :].T.astype(int)
-    transformed_2 = (affine_2 @ homogeneous_2)[:2, :].T.astype(int)
+        transformed_1 = (affine_1 @ homogeneous_1)[:2, :].T.astype(int)
+        transformed_2 = (affine_2 @ homogeneous_2)[:2, :].T.astype(int)
 
-    distance_pre = np.linalg.norm(correspond_points_1 - correspond_points_2, axis=1)
-    distance_post = np.linalg.norm(transformed_1 - transformed_2, axis=1)
+        distance_pre = np.linalg.norm(points_1 - points_2, axis=1)
+        distance_post = np.linalg.norm(transformed_1 - transformed_2, axis=1)
 
-    ax_hist.hist(distance_pre, 10, alpha=0.5, label="pre-correction", color="r")
-    ax_hist.hist(distance_post, 10, alpha=0.5, label="post-correction", color="g")
-    ax_hist.legend()
-    ax_hist.set_xlabel("distance (pixels)")
-    ax_hist.set_ylabel("number of points")
-    ax_hist.set_title(title)
+        ax_hist.hist(distance_pre, 10, alpha=0.5, label="pre-correction", color="r")
+        ax_hist.hist(distance_post, 10, alpha=0.5, label="post-correction", color="g")
+        ax_hist.legend()
+        ax_hist.set_xlabel("distance (pixels)")
+        ax_hist.set_ylabel("number of points")
+        ax_hist.set_title(title)
 
-    max_dist = float(np.max(np.hstack([distance_pre, distance_post])))
-    ax_scatter.scatter(distance_pre, distance_post)
-    ax_scatter.plot([0, max_dist], [0, max_dist], "k--", alpha=0.5)
-    ax_scatter.set_xlabel("distance pre-correction (pixels)")
-    ax_scatter.set_ylabel("distance post-correction (pixels)")
-    ax_scatter.set_title(title)
+        max_dist = float(np.max(np.hstack([distance_pre, distance_post])))
+        ax_scatter.scatter(distance_pre, distance_post)
+        ax_scatter.plot([0, max_dist], [0, max_dist], "k--", alpha=0.5)
+        ax_scatter.set_xlabel("distance pre-correction (pixels)")
+        ax_scatter.set_ylabel("distance post-correction (pixels)")
+        ax_scatter.set_title(title)
+    except Exception as exc:  # pragma: no cover - runtime diagnostics
+        LOGGER.error("Failed to create distance plots for %s", title, exc_info=exc)
 
 
 def _find_peak_regions(
@@ -643,9 +654,9 @@ def _create_zoom_visualisation(
         if PdfPages is None:  # pragma: no cover - guarded earlier
             raise RuntimeError("PdfPages unavailable; cannot write QC PDFs.")
 
-        with PdfPages(pdf_path) as pdf:
+        with PdfPages(str(pdf_path)) as pdf:
             pdf.savefig(fig, bbox_inches="tight")
-        fig.savefig(png_path, dpi=200, bbox_inches="tight")
+        fig.savefig(str(png_path), dpi=200, bbox_inches="tight")
         plt.close(fig)
 
 
@@ -715,7 +726,15 @@ def _process_channel_pair(
         )
 
         if points_1.size == 0 or points_2.size == 0:
-            _update_histograms(ax_hist, ax_scatter, title, np.empty((0, 2)), np.empty((0, 2)), affine_matrices[channel_a], affine_matrices[channel_b])
+            create_distance_plots(
+                np.empty((0, 2)),
+                np.empty((0, 2)),
+                affine_matrices[channel_a],
+                affine_matrices[channel_b],
+                ax_hist,
+                ax_scatter,
+                title,
+            )
             peaks_per_plane[plane_value] = np.empty((0, 2))
             continue
 
@@ -737,21 +756,29 @@ def _process_channel_pair(
         )
 
         if correspond_indices.size == 0:
-            _update_histograms(ax_hist, ax_scatter, title, np.empty((0, 2)), np.empty((0, 2)), affine_matrices[channel_a], affine_matrices[channel_b])
+            create_distance_plots(
+                np.empty((0, 2)),
+                np.empty((0, 2)),
+                affine_matrices[channel_a],
+                affine_matrices[channel_b],
+                ax_hist,
+                ax_scatter,
+                title,
+            )
             peaks_per_plane[plane_value] = np.empty((0, 2))
             continue
 
         correspond_points_1 = points_1[correspond_indices[:, 0], :]
         correspond_points_2 = points_2[correspond_indices[:, 1], :]
 
-        _update_histograms(
-            ax_hist,
-            ax_scatter,
-            title,
+        create_distance_plots(
             correspond_points_1,
             correspond_points_2,
             affine_matrices[channel_a],
             affine_matrices[channel_b],
+            ax_hist,
+            ax_scatter,
+            title,
         )
 
         peak_regions = _find_peak_regions(
@@ -894,7 +921,8 @@ def generate_camera_alignment_qc(
         first_channel = channel_names[0]
         example_tile = convert_s3_to_local(tilenames[first_channel][0], data_dir)
         tile_shape = da.from_zarr(example_tile.as_posix(), settings.pyramid_level).shape[2:]
-        planes, tile_height, tile_width = _compute_planes(tile_shape)
+        planes_array, tile_height, tile_width = _compute_planes(tile_shape)
+        planes = planes_array.tolist()
 
         tiles_available = len(tilenames[first_channel])
         tiles_to_process = [
@@ -938,6 +966,15 @@ def generate_camera_alignment_qc(
                     tile_width,
                     channel_cache,
                 )
+
+        if planes and tiles_to_process and channel_pairs:
+            fig_hist.suptitle("Distance Histograms - Camera Alignment QC", fontsize=16)
+            hist_path = output_dir / "distance_histograms.png"
+            fig_hist.savefig(str(hist_path), dpi=300, bbox_inches="tight")
+
+            fig_scatter.suptitle("Distance Scatter Plots - Camera Alignment QC", fontsize=16)
+            scatter_path = output_dir / "distance_scatter.png"
+            fig_scatter.savefig(str(scatter_path), dpi=300, bbox_inches="tight")
 
         plt.close(fig_hist)
         plt.close(fig_scatter)
