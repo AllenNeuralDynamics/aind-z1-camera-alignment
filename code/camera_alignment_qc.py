@@ -418,6 +418,9 @@ def create_distance_plots(
             (points_2.T, np.ones((1, points_2.shape[0]))),
             axis=0,
         )
+        #invert from previous inversion for matplotlib plots
+        affine_1 = np.linalg.inv(affine_1)
+        affine_2 = np.linalg.inv(affine_2)
 
         transformed_1 = (affine_1 @ homogeneous_1)[:2, :].T.astype(int)
         transformed_2 = (affine_2 @ homogeneous_2)[:2, :].T.astype(int)
