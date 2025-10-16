@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -109,6 +110,22 @@ def _upload_json_to_s3(local_path: Path, s3_json_base: Optional[str]) -> None:
         LOGGER.warning(
             "Failed to upload %s to %s: %s", local_path, destination, exc
         )
+
+
+def _cleanup_temp_plot_dirs(*directories: Path) -> None:
+    """Remove all files contained within the provided directories."""
+
+    for directory in directories:
+        if not directory.exists():
+            continue
+        for path in directory.iterdir():
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except Exception as exc:  # pragma: no cover - runtime safety
+                LOGGER.warning("Failed to remove %s: %s", path, exc)
 
 
 def ensure_advanced_qc_available() -> None:
@@ -940,7 +957,7 @@ def generate_camera_alignment_qc(
         s3_json_base = _determine_s3_json_base(tilenames)
 
         output_dirs = _prepare_output_dirs(scratch_root, dataset_name)
-        output_dir, _, pdf_dir, _ = output_dirs
+        output_dir, png_dir, pdf_dir, _ = output_dirs
 
         pair_template_paths = _create_pair_templates(
             template_data,
@@ -1019,6 +1036,7 @@ def generate_camera_alignment_qc(
         plt.close(fig_scatter)
 
         _merge_pair_pdfs(channel_pairs, pdf_dir, output_dir)
+        _cleanup_temp_plot_dirs(png_dir, pdf_dir)
         results[dataset_name] = output_dir
 
     return results
