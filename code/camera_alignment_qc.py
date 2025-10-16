@@ -50,9 +50,10 @@ except ImportError:  # pragma: no cover - runtime optional dependency
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_DATA_DIR = Path("/root/capsule/data")
-DEFAULT_SCRATCH_ROOT = Path("/root/capsule/scratch")
-DEFAULT_TEMPLATE_PATH = Path("/root/capsule/data/camera_aligned_neuroglancer.json")
+DEFAULT_DATA_DIR = Path("/data")
+DEFAULT_SCRATCH_ROOT = Path("/scratch")
+DEFAULT_RESULTS_ROOT = Path("/results")
+DEFAULT_TEMPLATE_PATH = Path("/data/camera_aligned_neuroglancer.json")
 AIND_S3_PREFIX = "s3://aind-open-data"
 
 
@@ -183,8 +184,8 @@ def _resolve_datasets(
     return [path for path in dataset_paths if path.exists()]
 
 
-def _prepare_output_dirs(scratch_root: Path, dataset_name: str) -> Tuple[Path, Path, Path, Path]:
-    output_dir = scratch_root / f"{dataset_name}_camera_alignment_QC"
+def _prepare_output_dirs(output_dir: Path, dataset_name: str) -> Tuple[Path, Path, Path, Path]:
+    output_dir = output_dir / f"{dataset_name}_camera_alignment_QC"
     png_dir = output_dir / "png_files"
     pdf_dir = output_dir / "pdf_files"
     json_dir = output_dir / "json_files"
@@ -811,7 +812,7 @@ def generate_camera_alignment_qc(
     dataset_names: Optional[Sequence[str]] = None,
     *,
     data_dir: Path = DEFAULT_DATA_DIR,
-    scratch_root: Path = DEFAULT_SCRATCH_ROOT,
+    scratch_root: Path = DEFAULT_RESULTS_ROOT,
     template_path: Path = DEFAULT_TEMPLATE_PATH,
     settings: Optional[QCSettings] = None,
 ) -> Dict[str, Path]:

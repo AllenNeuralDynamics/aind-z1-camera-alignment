@@ -150,6 +150,7 @@ def run_camera_alignment_capsule(args: Dict[str, Any]) -> None:
     results_root = '/results/'
     name = args["dataset_name"]
     s3_bucket = args["bucket"]
+    s3_path_rc = f"s3://aind-open-data/{name}/image_radial_correction/"
     
     LOGGER.info(f'Running capsule version of Camera Alignment for {name}')
     
@@ -165,6 +166,18 @@ def run_camera_alignment_capsule(args: Dict[str, Any]) -> None:
         # Fallback to backup data location
         backup_name = f"/data/{name}/SPIM.ome.zarr/"
         _process_local_data(backup_name, data_folder, scratch_root, results_root, s3_bucket, name)
+    
+    LOGGER.info('*' * 50)
+    LOGGER.info(f'Making QC Figures now (Pipeline Mode)')
+    LOGGER.info('*' * 50)
+    try:
+        qc_output_dir = results_root + name + "/camera_alignment_qc/"
+        make_comprehensive_qc_plots(s3_path_rc, scratch_root, output_root=qc_output_dir)
+        LOGGER.info(f'QC plots saved to: {qc_output_dir}')
+    except Exception as e:
+        LOGGER.warning(f"QC plot generation failed in pipeline mode: {e}")
+        import traceback
+        traceback.print_exc()
 
 def _process_local_data(
     data_path: str, 

@@ -6,7 +6,7 @@ import sys
 from typing import List, Dict, Any
 
 from cam_affine_cuda import main as run_2d_camera_correction
-import qc_results
+import camera_alignment_qc
 from utils import (
     load_data_description,
     list_zarr_tiles_from_s3,
@@ -92,44 +92,10 @@ def run_camera_alignment_qc_only() -> bool:
     """Execute QC plot generation without running alignment."""
     results_root = pathlib.Path("/results")
     results_root.mkdir(parents=True, exist_ok=True)
-
-    try:
-        dataset_name = load_data_description()
-    except (FileNotFoundError, RuntimeError) as exc:
-        logger.error(f"Failed to load dataset configuration: {exc}")
-        return False
-
-    s3_path = f"s3://aind-open-data/{dataset_name}/image_radial_correction/"
-    logger.info(f"Preparing QC generation for dataset: {dataset_name}")
-
-    try:
-        zarr_tiles = list_zarr_tiles_from_s3(s3_path)
-    except RuntimeError as exc:
-        logger.error(f"Failed to list zarr tiles: {exc}")
-        return False
-
-    if not zarr_tiles:
-        logger.error(f"No zarr tiles found at {s3_path}")
-        return False
-
-    qc_plotter = getattr(qc_results, "make_comprehensive_qc_plots", None)
-
-    if qc_plotter is None:
-        logger.error("QC plotting function make_comprehensive_qc_plots is not available.")
-        return False
-
-    qc_output_dir = results_root / dataset_name / "camera_alignment_qc"
-    qc_output_dir.mkdir(parents=True, exist_ok=True)
-
-    scratch_root = "/scratch/"
-
     logger.info("Generating camera alignment QC plots only (no alignment run).")
     try:
-        qc_plotter(
-            s3_path,
-            scratch_root,
-            output_root=str(qc_output_dir),
-        )
+        camera_alignment_qc.generate_camera_alignment_qc()
+
     except Exception as exc:  # noqa: BLE001
         logger.error(f"QC plot generation failed: {exc}")
         logger.debug("QC failure details", exc_info=True)
