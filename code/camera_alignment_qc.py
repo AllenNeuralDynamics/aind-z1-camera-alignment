@@ -185,7 +185,7 @@ def _resolve_datasets(
 
 
 def _prepare_output_dirs(output_dir: Path, dataset_name: str) -> Tuple[Path, Path, Path, Path]:
-    output_dir = output_dir / f"{dataset_name}_camera_alignment_QC"
+    output_dir = output_dir / f"{dataset_name}/camera_alignment_QC"
     png_dir = output_dir / "png_files"
     pdf_dir = output_dir / "pdf_files"
     json_dir = output_dir / "json_files"
