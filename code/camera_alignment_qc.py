@@ -246,7 +246,7 @@ def _extract_affine_metadata(
         affine[1:, -1] -= offset[0]
         affine = affine[::-1, :]
         affine[:, :2] = affine[:, 1::-1]
-        affine_matrices[channel] = affine
+        affine_matrices[channel] = np.linalg.inv(affine)
 
     # Order tiles by proximity to the volume center for the reference channel
     distances: List[float] = []
