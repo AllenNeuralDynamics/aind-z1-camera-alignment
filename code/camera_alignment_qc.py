@@ -14,12 +14,13 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import dask.array as da
 import matplotlib.pyplot as plt
 import numpy as np
-from tqdm import tqdm
+from s3_writer import copy_file_to_s3
+
 
 # Optional dependencies that enable the advanced QC workflow
 try:
@@ -68,6 +69,45 @@ class QCSettings:
     pyramid_level: str = "0"
     cross_section_scale: float = 0.2
     projection_scale: float = 80.0
+
+
+def apply_affine_to_image(image: np.ndarray, affine_matrix: np.ndarray) -> np.ndarray:
+    """Apply a 2D affine transform to an image plane."""
+
+    try:
+        transform_matrix = np.asarray(affine_matrix, dtype=float)
+        return tf.warp(image, transform_matrix, output_shape=image.shape)
+    except Exception as exc:  # pragma: no cover - runtime safety
+        LOGGER.error("Failed to apply affine transform", exc_info=exc)
+        return image
+
+
+def _determine_s3_json_base(tilenames: Dict[str, List[str]]) -> Optional[str]:
+    """Infer the destination S3 prefix for neuroglancer JSON artefacts."""
+
+    for urls in tilenames.values():
+        for url in urls:
+            if not url.startswith("s3://"):
+                continue
+            for marker in ("image_radial_correction", "image_radially_corrected"):
+                if marker in url:
+                    prefix = url.split(marker, 1)[0].rstrip("/")
+                    return f"{prefix}/image_cross_image_alignment/"
+    return None
+
+
+def _upload_json_to_s3(local_path: Path, s3_json_base: Optional[str]) -> None:
+    """Upload a JSON file to the derived S3 prefix when available."""
+
+    if not s3_json_base:
+        return
+    destination = f"{s3_json_base}{local_path.name}"
+    try:
+        copy_file_to_s3(str(local_path), destination)
+    except Exception as exc:  # pragma: no cover - runtime safety
+        LOGGER.warning(
+            "Failed to upload %s to %s: %s", local_path, destination, exc
+        )
 
 
 def ensure_advanced_qc_available() -> None:
@@ -233,6 +273,7 @@ def _create_pair_templates(
     rc_layers: Dict[str, Dict],
     channel_pairs: Sequence[Tuple[str, str]],
     output_dir: Path,
+    s3_json_base: Optional[str],
 ) -> Dict[Tuple[str, str], Path]:
     pair_template_paths: Dict[Tuple[str, str], Path] = {}
 
@@ -282,6 +323,8 @@ def _create_pair_templates(
         with output_path.open("w", encoding="utf-8") as handle:
             json.dump(template, handle, indent=2)
 
+        _upload_json_to_s3(output_path, s3_json_base)
+
         pair_template_paths[(channel_a, channel_b)] = output_path
 
     return pair_template_paths
@@ -303,7 +346,7 @@ def _load_tile_stack(
 def _apply_affine_stack(stack: np.ndarray, affine: np.ndarray) -> np.ndarray:
     transformed = np.zeros_like(stack, dtype=np.float32)
     for index, plane in enumerate(stack):
-        transformed[index, ...] = tf.warp(plane, affine, output_shape=plane.shape)
+        transformed[index, ...] = apply_affine_to_image(plane, affine)
     return transformed
 
 
@@ -488,6 +531,7 @@ def _create_zoom_visualisation(
     tilenames: Dict[str, List[str]],
     pair_template_path: Path,
     output_dirs: Tuple[Path, Path, Path, Path],
+    s3_json_base: Optional[str],
     data_dir: Path,
     settings: QCSettings,
     tile_1_stack: np.ndarray,
@@ -546,10 +590,18 @@ def _create_zoom_visualisation(
         with json_path.open("w", encoding="utf-8") as handle:
             json.dump(base_json, handle, indent=2)
 
-        ng_link = (
-            "https://neuroglancer-demo.appspot.com/#!"
-            f"s3://aind-open-data/{dataset_name}/image_cross_image_alignment/{json_filename}"
-        )
+        _upload_json_to_s3(json_path, s3_json_base)
+
+        if s3_json_base:
+            ng_link = (
+                "https://neuroglancer-demo.appspot.com/#!"
+                f"{s3_json_base}{json_filename}"
+            )
+        else:
+            ng_link = (
+                "https://neuroglancer-demo.appspot.com/#!"
+                f"s3://aind-open-data/{dataset_name}/image_cross_image_alignment/{json_filename}"
+            )
 
         fig, axes = plt.subplots(1, 2, figsize=(10, 5))
         fig.suptitle(
@@ -609,6 +661,7 @@ def _process_channel_pair(
     affine_matrices: Dict[str, np.ndarray],
     output_dirs: Tuple[Path, Path, Path, Path],
     pair_template_paths: Dict[Tuple[str, str], Path],
+    s3_json_base: Optional[str],
     data_dir: Path,
     tile_height: int,
     tile_width: int,
@@ -724,6 +777,7 @@ def _process_channel_pair(
             tilenames,
             pair_template_paths[channel_pair],
             output_dirs,
+            s3_json_base,
             data_dir,
             settings,
             tile_1_stack,
@@ -822,6 +876,7 @@ def generate_camera_alignment_qc(
 
         cc_layers, rc_layers = _prepare_channel_layers(cc_data, rc_data, channel_names)
         tilenames, affine_matrices = _extract_affine_metadata(cc_layers, channel_names)
+        s3_json_base = _determine_s3_json_base(tilenames)
 
         output_dirs = _prepare_output_dirs(scratch_root, dataset_name)
         output_dir, _, pdf_dir, _ = output_dirs
@@ -832,6 +887,7 @@ def generate_camera_alignment_qc(
             rc_layers,
             channel_pairs,
             output_dir,
+            s3_json_base,
         )
 
         first_channel = channel_names[0]
@@ -875,6 +931,7 @@ def generate_camera_alignment_qc(
                     affine_matrices,
                     output_dirs,
                     pair_template_paths,
+                    s3_json_base,
                     data_dir,
                     tile_height,
                     tile_width,
