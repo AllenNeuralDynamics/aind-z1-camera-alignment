@@ -1,407 +1,895 @@
-import dask.array as da
-import numpy as np 
-import numpy.linalg
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-from glob import glob
-import zarr
-from pathlib import Path
+"""Generate camera-alignment QC plots and neuroglancer assets from existing JSON metadata.
+
+This module ingests the scientist-provided neuroglancer JSON exports
+(`camera_aligned_neuroglancer.json` and `radial_correction_neuroglancer.json`)
+for a dataset and reproduces their QC plotting workflow in a more maintainable
+way. The entry point `generate_camera_alignment_qc` is intended to be invoked
+from the capsule's QC target and can also be used programmatically.
+"""
+
+from __future__ import annotations
+
+import copy
 import json
-import os
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+import dask.array as da
+import matplotlib.pyplot as plt
+import numpy as np
 from tqdm import tqdm
-from multiprocessing import cpu_count
-from s3_writer import get_resolution_zyx, copy_file_to_s3
 
-
-# Handle optional imports for QC functionality
+# Optional dependencies that enable the advanced QC workflow
 try:
-    from skimage.metrics import structural_similarity as ssim
-    from skimage.registration import phase_cross_correlation
-    from skimage import exposure
-    from skimage.feature import blob_dog, match_descriptors
+    from skimage.feature import blob_dog, match_descriptors, peak_local_max
     from skimage import transform as tf
     from scipy.ndimage import gaussian_filter
-    from scipy.ndimage import gaussian_filter
-    from skimage.feature import peak_local_max
     from matplotlib.backends.backend_pdf import PdfPages
-    from PyPDF2 import PdfMerger
     ADVANCED_QC_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: Advanced QC features not available. Missing packages: {e}")
+except ImportError as exc:  # pragma: no cover - handled at runtime
+    print(
+        "Warning: Advanced QC features not available. Missing packages: "
+        f"{exc}. Install skimage/scipy/matplotlib with PDF support."
+    )
     ADVANCED_QC_AVAILABLE = False
+    PdfPages = None  # type: ignore[assignment]
 
-try:
+try:  # pragma: no cover - runtime optional dependency
     from PyPDF2 import PdfMerger
-except ImportError:
+except ImportError:  # pragma: no cover - runtime optional dependency
     try:
-        from PyPDF2 import PdfFileMerger as PdfMerger
+        from PyPDF2 import PdfFileMerger as PdfMerger  # type: ignore[misc]
     except ImportError:
-        print("Warning: PDF merging not available. Install PyPDF2 for full functionality.")
-        PdfMerger = None
+        print(
+            "Warning: PDF merging not available. Install PyPDF2 for full functionality."
+        )
+        PdfMerger = None  # type: ignore[assignment]
 
-from calc_affine import get_list_of_channels, get_channel_wavelength_from_single_channel_digit, make_pairs_of_channels
+LOGGER = logging.getLogger(__name__)
 
-
-
-nodes = cpu_count()-1
-dot_num, dot_threshold = 10000, 10 # Matt's suggestions 500, 100
-top_n_points = 4
-n_bins = 50
-width = 30
-dot_threshold = 10
-tiles2check = np.arange(0,8,2)
-
-def getTop(A, dot_num = 10000, dot_threshold = 10):
-    """
-    Detects blobs in image A, using Difference of Gaussians (DoG)
-    Sort them by intensity and 
-    return coordinates of the top intensity blobs
-    """
-    blobs = blob_dog(A.T.astype(np.float32), min_sigma=1, max_sigma=1.5,threshold = dot_threshold)
-    intensities = A.T[blobs[:,0].astype(np.uint16),blobs[:,1].astype(np.uint16)]
-    return blobs[np.flip(np.argsort(intensities))[:dot_num],:-1]
+DEFAULT_DATA_DIR = Path("/root/capsule/data")
+DEFAULT_SCRATCH_ROOT = Path("/root/capsule/scratch")
+DEFAULT_TEMPLATE_PATH = Path("/root/capsule/code/ng_template.json")
+AIND_S3_PREFIX = "s3://aind-open-data"
 
 
-def merge_pdfs(pdf_paths, output_path):
+@dataclass(frozen=True)
+class QCSettings:
+    """Configuration parameters for the QC plotting workflow."""
+
+    dot_num: int = 10000
+    dot_threshold: float = 10.0
+    top_n_points: int = 4
+    n_bins: int = 50
+    clip_half_width: int = 30
+    tiles_to_check: Sequence[int] = (0, 2, 4, 6)
+    pyramid_level: str = "0"
+    cross_section_scale: float = 0.2
+    projection_scale: float = 80.0
+
+
+def ensure_advanced_qc_available() -> None:
+    """Raise a helpful error if advanced QC dependencies are missing."""
+
+    if not ADVANCED_QC_AVAILABLE:
+        raise RuntimeError(
+            "Advanced QC dependencies are not available. Please ensure skimage, "
+            "scipy, and matplotlib (with PdfPages support) are installed."
+        )
+    if PdfPages is None:
+        raise RuntimeError(
+            "matplotlib PdfPages is unavailable; cannot create PDF outputs."
+        )
+
+
+def load_json(path: Path) -> Dict:
+    """Load a JSON document from disk."""
+
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def merge_pdfs(pdf_paths: Sequence[Path], output_path: Path) -> None:
+    """Merge multiple PDF files into a single PDF if PyPDF2 is available."""
+
+    if PdfMerger is None:
+        LOGGER.warning("PyPDF2 unavailable; skipping PDF merge for %s", output_path)
+        return
+
     merger = PdfMerger()
-    for pdf in pdf_paths:
-        merger.append(pdf)
-    merger.write(output_path)
-    merger.close()
-
-def make_files_and_ng_links(): 
-    data_dir = "/root/capsule/data"
-data_assets = os.listdir(data_dir)
-data_assets.sort()
-
-data_assets_data = [d for d in data_assets if 'image_radial_correction' in os.listdir(os.path.join(data_dir,d))]
-for data_asset in data_assets_data:
-    print(f"Processing {data_asset}")
-    output_dir = f"/root/capsule/scratch/{data_asset}_camera_alignment_QC"
-    os.makedirs(output_dir, exist_ok=True)
-    output_dir_png = os.path.join(output_dir, "png_files")
-    output_dir_pdf = os.path.join(output_dir, "pdf_files")
-    output_dir_json = os.path.join(output_dir, "json_files")
-    os.makedirs(output_dir_png, exist_ok=True)
-    os.makedirs(output_dir_pdf, exist_ok=True)
-    os.makedirs(output_dir_json, exist_ok=True)
-
-    data_path = os.path.join(data_dir, data_asset)
-    cc_ng_json = os.path.join(data_path, "camera_aligned_neuroglancer.json")
-    rc_ng_json = os.path.join(data_path, "radially_corrected_neuroglancer.json")
-    template_ng_json = "/root/capsule/code/ng_template.json"
-    with open(cc_ng_json, "r") as f:
-        cc_data = json.load(f)
+    try:
+        for pdf in pdf_paths:
+            if pdf.exists():
+                merger.append(str(pdf))
+        if merger.pages:
+            with output_path.open("wb") as handle:
+                merger.write(handle)
+            LOGGER.info("Merged %d PDFs into %s", len(pdf_paths), output_path)
+        else:
+            LOGGER.debug("No PDF pages found to merge for %s", output_path)
+    finally:
+        merger.close()
 
 
-    with open(rc_ng_json, "r") as f:
-        rc_data = json.load(f)
-    channel_names = [layer['name'] for layer in cc_data['layers']]
-    channel_names_sorted = sorted(channel_names)
-    channel_names_sorted.remove('CH_405')
-    channel_names_paired = [channel_names_sorted[i:i + 2] for i in range(len(channel_names_sorted)-1)]
+def convert_s3_to_local(url: str, data_dir: Path) -> Path:
+    """Convert an S3 URL to the expected local on-disk zarr path."""
+
+    if not url.startswith(AIND_S3_PREFIX):
+        return Path(url)
+    relative = url[len(AIND_S3_PREFIX) :].lstrip("/")
+    return data_dir / relative
 
 
-    layers = {}
-    tilenames = {}
-    affine_mat = {}
-    for c in channel_names_sorted:
-        layers[c] = [layer for layer in cc_data['layers'] if layer['name'] == c][0]
-
-    first_tile_name = layers[channel_names_sorted[-1]]['source'][0]['url'].split('/')[-1][:18]
-    
-    offset = np.array(layers[channel_names_sorted[-1]]['source'][0]['transform']['matrix'])[-2:,5:].T
-    for c in channel_names_sorted:
-        layer = layers[c]
-
-        tilenames[c] = [s['url'] for s in layer['source']]
-        source = [s for s in layer['source'] if first_tile_name in s['url']][0]
-        M = np.array(source['transform']['matrix'])[2:,2:]
-        M[:,3] += M[:,0]
-        M = M[:,1:]
-        M[1:,-1] = M[1:,-1] - offset
-        M = M[::-1,:]
-        M[:,:2]= M[:,1::-1]
-        affine_mat[c] = M
-        # affine_mat[c] = source['transform']['matrix']
-        # print(f"Channel: {c}, Affine matrix:\n{M}\n")
-
-    c_last = channel_names_sorted[-1]
-    layer = layers[c_last]
-    source = layer['source']
-    dist2center = []
-    for s in source:
-        matrix = np.array(s['transform']['matrix'])
-        points = matrix[3:, -1:]
-        dist2center.append(np.linalg.norm(points))
-    dist2center = np.array(dist2center)
-    ind_closest2center = np.argsort(dist2center)
-    tilenames[c_last] = [tilenames[c_last][i] for i in ind_closest2center]
-
-    for c in channel_names_sorted[:-1]:
-        layer = layers[c]
-        c = layer['name']
-        tilenames[c] = [t.replace(c_last.split('_')[1],c.split('_')[1]) for t in tilenames[c_last]]
-
-    for i in range(len(cc_data['layers'])):
-        cc_data['layers'][i]['name'] = cc_data['layers'][i]['name']+"_cc"  
-    for i in range(len(rc_data['layers'])):
-        rc_data['layers'][i]['name'] = rc_data['layers'][i]['name']+"_rc"
-        
-    for channel_pair in channel_names_paired:
-        
-        with open(template_ng_json, "r") as f:
-            template_data = json.load(f)
-        layer_cc_0 = [layer for layer in cc_data['layers'] if layer['name'] == channel_pair[0]+"_cc"][0]
-        layer_cc_0['shader'] = "#uicontrol vec3 color color(default=\"#ff0000\")\n#uicontrol invlerp normalized\nvoid main() {\nemitRGB(color * normalized());\n}"
-
-        layer_cc_1 = [layer for layer in cc_data['layers'] if layer['name'] == channel_pair[1]+"_cc"][0]
-        layer_cc_1['shader'] = "#uicontrol vec3 color color(default=\"#00ff00\")\n#uicontrol invlerp normalized\nvoid main() {\nemitRGB(color * normalized());\n}"
-
-        layer_rc_0 = [layer for layer in rc_data['layers'] if layer['name'] == channel_pair[0]+"_rc"][0]
-        layer_rc_0['shader'] = "#uicontrol vec3 color color(default=\"#00ff00\")\n#uicontrol invlerp normalized\nvoid main() {\nemitRGB(color * normalized());\n}"
-
-        layer_rc_1 = [layer for layer in rc_data['layers'] if layer['name'] == channel_pair[1]+"_rc"][0]
-        layer_rc_1['shader'] = "#uicontrol vec3 color color(default=\"#ff0000\")\n#uicontrol invlerp normalized\nvoid main() {\nemitRGB(color * normalized());\n}"
+def _clamp_slice(center: int, half_width: int, upper_bound: int) -> slice:
+    start = max(0, center - half_width)
+    end = min(upper_bound, center + half_width)
+    return slice(start, end)
 
 
-        template_data['layers'] = [layer_cc_0, layer_cc_1, layer_rc_0, layer_rc_1]
-        template_data['dimensions'] = cc_data['dimensions']
-        output_filename = f"cc_ng_{channel_pair[0]}_{channel_pair[1]}.json"
-        output_path = os.path.join(output_dir,output_filename)
-        with open(output_path, "w") as f:
-            json.dump(template_data, f, indent=2)
-
-    first_channel = channel_names_sorted[0]
-    tilename = tilenames[first_channel][0].replace('s3://aind-open-data','/root/capsule/data')
-    pyramid_level = '0'
-    tile_shape = da.from_zarr(tilename, pyramid_level).shape[2:]     #---------------> if 5D z should be shape[2] instead of shape[0]
-    img = np.zeros((tile_shape[1],tile_shape[2],3),dtype=np.uint8)
-    thickness, spacing = tile_shape[0]//3, tile_shape[0]//5 #-------> from 20 middle planes select 1 from every 4
-    num_planes = int(np.ceil(thickness/spacing))
-    planes = np.arange((tile_shape[0]-thickness)//2, (tile_shape[0]+thickness)//2, spacing)
-
-    x_locs = (np.linspace(0,tile_shape[2],n_bins+1)[1:]+np.linspace(0,tile_shape[2],n_bins+1)[:-1])//2
-    y_locs = (np.linspace(0,tile_shape[1],n_bins+1)[1:]+np.linspace(0,tile_shape[1],n_bins+1)[:-1])//2
-
-    fig_dist, axs_dist = plt.subplots(num_planes*len(tiles2check),len(channel_names_paired),figsize=(5*len(channel_names_paired),5*len(tiles2check)*num_planes))
-    fig_dist_scatter, axs_dist_scatter = plt.subplots(num_planes*len(tiles2check),len(channel_names_paired),figsize=(5*len(channel_names_paired),5*len(tiles2check)*num_planes))
+def _resolve_datasets(
+    dataset_names: Optional[Sequence[str]],
+    data_dir: Path,
+) -> List[Path]:
+    if dataset_names:
+        dataset_paths = [data_dir / name for name in dataset_names]
+    else:
+        dataset_paths = [
+            path
+            for path in data_dir.iterdir()
+            if path.is_dir() and (path / "image_radial_correction").exists()
+        ]
+    return [path for path in dataset_paths if path.exists()]
 
 
-    for i_tile, tile_ind in enumerate(tiles2check): # 4 tiles in the center region
-        c1 = ''
-        c2 = ''
-        print("--------------------------------------------------")
-        print(f"Processing tile {tile_ind+1}")
-        for i_pair, pair in enumerate(channel_names_paired):
-            print(f"Processing pair {pair[0]} vs {pair[1]}")
+def _prepare_output_dirs(scratch_root: Path, dataset_name: str) -> Tuple[Path, Path, Path, Path]:
+    output_dir = scratch_root / f"{dataset_name}_camera_alignment_QC"
+    png_dir = output_dir / "png_files"
+    pdf_dir = output_dir / "pdf_files"
+    json_dir = output_dir / "json_files"
 
-            c1 = pair[0]
-            
-            print(f'loading channel {c1}')
-            if c2 == c1:
-                tilename_1 = tilename_2
-                affine_1 = affine_2.copy()
-                tile_1 = tile_2.copy()
-                tile_1_transformed = tile_2_transformed.copy()
-            else:
-                tilename_1 = tilenames[c1][tile_ind].replace('s3://aind-open-data','/root/capsule/data')
-                affine_1 = affine_mat[c1].copy()
-                # Use Dask's percentile to avoid loading the whole array into memory
-                tile_1_zarr = da.from_zarr(tilename_1, pyramid_level)[0,0,...]
+    for directory in (output_dir, png_dir, pdf_dir, json_dir):
+        directory.mkdir(parents=True, exist_ok=True)
 
-                tile_1 = tile_1_zarr[planes,...].compute()
-                # np.zeros((len(planes), tile_shape[1], tile_shape[2]), dtype=np.uint8)
-                tile_1_transformed = np.zeros_like(tile_1, dtype=np.float32)
-                for i_plane, plane in tqdm(enumerate(planes),desc=f'Processing {c1}'):
-                    im = tile_1[i_plane,...]
-                    tile_1_transformed[i_plane,...] = tf.warp(im, affine_1, output_shape=im.shape)
-
-            c2 = pair[1]
-            print(f'loading channel {c2}')
-            tilename_2 = tilenames[c2][tile_ind].replace('s3://aind-open-data','/root/capsule/data')
-            affine_2 = affine_mat[c2].copy()
-            tile_2_zarr = da.from_zarr(tilename_2, pyramid_level)[0,0,...]
-
-            tile_2 = tile_2_zarr[planes,...].compute()
-            tile_2_transformed = np.zeros_like(tile_2, dtype=np.float32)
-            for i_plane, plane in tqdm(enumerate(planes),desc=f'Processing {c2}'):
-                im = tile_2[i_plane,...]
-                tile_2_transformed[i_plane,...] = tf.warp(im, affine_2, output_shape=im.shape)
-
-            peaks = {}
-            for i_plane, plane in enumerate(planes):
-                
-                points_1 = getTop(tile_1[i_plane,...], dot_num=dot_num, dot_threshold=dot_threshold)
-                points_2 = getTop(tile_2[i_plane,...], dot_num=dot_num, dot_threshold=dot_threshold)
-                
-                
-                ax = axs_dist[i_plane+num_planes*i_tile,i_pair]
-                ax.set_title(f'{c1.replace("CH_","")} vs. {c2.replace("CH_","")}, tile = {'_'.join(tilename_1.split('/')[-1].split('_')[1:5]).replace('_Y','-Y').replace('_0','')} - z={plane}',fontsize = 10)
-
-                ax_scatter = axs_dist_scatter[i_plane+num_planes*i_tile,i_pair]
-                ax_scatter.set_title(f'{c1.replace("CH_","")} vs. {c2.replace("CH_","")}, tile = {'_'.join(tilename_1.split('/')[-1].split('_')[1:5]).replace('_Y','-Y').replace('_0','')} - z={plane}',fontsize = 10)
-
-                if i_pair == 0:
-                    ax.set_ylabel('number of points', fontsize = 18)
-
-                
-                if len(points_1)==0 or len(points_2)==0:
-                    ax.set_xticks([])
-                    ax.set_yticks([])
-
-                    ax_scatter.set_xticks([])
-                    ax_scatter.set_yticks([])
-                    continue
-
-                correspond_points_ind = match_descriptors(points_1, points_2, max_distance=6, max_ratio=0.8)
-                if len(correspond_points_ind)==0:
-                    peaks[plane] = []
-                    ax.set_xticks([])
-                    ax.set_yticks([])
-
-                    ax_scatter.set_xticks([])
-                    ax_scatter.set_yticks([])
-                    continue
-                correspond_points_1 = points_1[correspond_points_ind[:,0],:]
-                correspond_points_2 = points_2[correspond_points_ind[:,1],:]
-                points_hist_1 = gaussian_filter(np.histogram2d(correspond_points_1[:,0], correspond_points_1[:,1], bins=n_bins, range=[[0, tile_shape[1]], [0, tile_shape[2]]])[0], sigma=1)
-                points_hist_2 = gaussian_filter(np.histogram2d(correspond_points_2[:,0], correspond_points_2[:,1], bins=n_bins, range=[[0, tile_shape[1]], [0, tile_shape[2]]])[0], sigma=1)
-
-                peaks_ind = peak_local_max(points_hist_1 + points_hist_2, min_distance=2, threshold_rel=0.2, num_peaks=top_n_points)
-                peaks[plane] = np.array([(x_locs[p[0]],y_locs[p[1]]) for p in peaks_ind])
-
-                
-                homogeneous_points_1 = np.vstack([
-                    correspond_points_1.T,
-                    np.ones(correspond_points_1.shape[0])
-                ])
-                transformed_homogeneous_points_1 = affine_1 @ homogeneous_points_1
-                transformed_points_1 = transformed_homogeneous_points_1[:2, :].T.astype(int)
-
-                homogeneous_points_2 = np.vstack([
-                    correspond_points_2.T,
-                    np.ones(correspond_points_2.shape[0])
-                ])
-                transformed_homogeneous_points_2 = affine_2 @ homogeneous_points_2
-                transformed_points_2 = transformed_homogeneous_points_2[:2, :].T.astype(int)
-
-                distance_pre = np.linalg.norm(correspond_points_1 - correspond_points_2, axis=1)
-                distance_post = np.linalg.norm(transformed_points_1 - transformed_points_2, axis=1)
-                
+    return output_dir, png_dir, pdf_dir, json_dir
 
 
-                ax.hist(distance_pre,10,alpha=0.5, label='pre-correction',color='r');
-                ax.hist(distance_post,10,alpha=0.5, label='post-correction',color ='g');
-                ax.legend()
-                ax.set_xlabel('distance (pixels)', fontsize = 18)
+def _prepare_channel_layers(
+    cc_data: Dict,
+    rc_data: Dict,
+    channel_names: Sequence[str],
+) -> Tuple[Dict[str, Dict], Dict[str, Dict]]:
+    cc_layers: Dict[str, Dict] = {}
+    rc_layers: Dict[str, Dict] = {}
 
-                ax_scatter.scatter(distance_pre,distance_post)
-                ax_scatter.plot([0,np.max(np.hstack([distance_pre,distance_post]))],[0,np.max(np.hstack([distance_pre,distance_post]))])
-                ax_scatter.set_xlabel('distance pre-correction (pixels)', fontsize = 16)
-                ax_scatter.set_ylabel('distance post-correction (pixels)', fontsize = 15)
+    for channel in channel_names:
+        cc_layer = copy.deepcopy(
+            next(layer for layer in cc_data["layers"] if layer["name"] == channel)
+        )
+        cc_layer["name"] = f"{channel}_cc"
+        cc_layers[channel] = cc_layer
 
-            planes = list(peaks.keys())
+        rc_layer = copy.deepcopy(
+            next(layer for layer in rc_data["layers"] if layer["name"] == channel)
+        )
+        rc_layer["name"] = f"{channel}_rc"
+        rc_layers[channel] = rc_layer
 
-            for i_plane, plane in enumerate(planes):
-                print(f"Processing plane {plane}")
+    return cc_layers, rc_layers
 
-                for i_point in range(len(peaks[plane])):
-                    fig = plt.figure(figsize = (10,5))
-                    gs = fig.add_gridspec(1, 2, wspace=0.1, hspace=0.1)    
-                    x_loc = int(peaks[plane][i_point,0])
-                    y_loc = int(peaks[plane][i_point,1])
-                    z_loc = int(plane)
-                    print(f"Making figure for point x = {x_loc}, y = {y_loc}, in plane {plane}")
-                    tile_1_clip = tile_1[i_plane,y_loc-width:y_loc+width,x_loc-width:x_loc+width]
-                    tile_2_clip = tile_2[i_plane,y_loc-width:y_loc+width,x_loc-width:x_loc+width]
-                    tile_1_transformed_clip = tile_1_transformed[i_plane,y_loc-width:y_loc+width,x_loc-width:x_loc+width]
-                    tile_2_transformed_clip = tile_2_transformed[i_plane,y_loc-width:y_loc+width,x_loc-width:x_loc+width]
 
-                    vmin_1 = int(np.percentile(tile_1_clip, 10))
-                    vmax_1 = int(np.percentile(tile_1_clip, 99.99))
-                    vmin_2 = int(np.percentile(tile_2_clip, 10))
-                    vmax_2 = int(np.percentile(tile_2_clip, 99.99))
+def _extract_affine_metadata(
+    cc_layers: Dict[str, Dict],
+    ordered_channels: Sequence[str],
+) -> Tuple[Dict[str, List[str]], Dict[str, np.ndarray]]:
+    tilenames: Dict[str, List[str]] = {}
+    affine_matrices: Dict[str, np.ndarray] = {}
 
-                    output_filename = f"cc_ng_{pair[0]}_{pair[1]}.json"
-                    output_path = os.path.join(output_dir,output_filename)
-                    with open(output_path, "r") as f:
-                        template_data = json.load(f)
+    last_channel = ordered_channels[-1]
+    reference_layer = cc_layers[last_channel]
+    first_tile_token = Path(reference_layer["source"][0]["url"]).name[:18]
+    offset = np.asarray(reference_layer["source"][0]["transform"]["matrix"], dtype=float)[
+        -2:, 5:
+    ].T
 
-                    json_data = template_data.copy()
-                    for i_c in range(2):
-                        c = pair[i_c]
-                        tilename = tilenames[pair[i_c]][tile_ind]
-                        for i in range(len(json_data['layers'])):
-                            if json_data['layers'][i]['name'].startswith(c):
-                                json_data['layers'][i]['source'] = [s for s in json_data['layers'][i]['source'] if s['url']==tilename]
+    for channel, layer in cc_layers.items():
+        tilenames[channel] = [entry["url"] for entry in layer["source"]]
 
-                                json_data['layers'][i]['shaderControls']['normalized']['range'] = [vmin_1, vmax_1]
-                                json_data['layers'][i]['shaderControls']['normalized']['range'] = [vmin_2, vmax_2]
-                                
-                                if json_data['layers'][i]['name'].endswith('_rc'):
-                                    json_data['layers'][i]['visible'] = False
-                    json_data['position'] = [x_loc, y_loc, z_loc,0]
-                    json_data['crossSectionScale'] = 0.2
-                    json_data['projectionScale'] = 80
+        reference_source = next(
+            entry for entry in layer["source"] if first_tile_token in entry["url"]
+        )
+        matrix = np.asarray(reference_source["transform"]["matrix"], dtype=float)
+        affine = matrix[2:, 2:]
+        affine[:, 3] += affine[:, 0]
+        affine = affine[:, 1:]
+        affine[1:, -1] -= offset
+        affine = affine[::-1, :]
+        affine[:, :2] = affine[:, 1::-1]
+        affine_matrices[channel] = affine
 
-                    json_data['layers'][0]['source'][0]['transform']['matrix'][-1][-1] -= json_data['layers'][2]['source'][0]['transform']['matrix'][-1][-1] 
-                    json_data['layers'][0]['source'][0]['transform']['matrix'][-2][-1] -= json_data['layers'][2]['source'][0]['transform']['matrix'][-2][-1]
+    # Order tiles by proximity to the volume center for the reference channel
+    distances: List[float] = []
+    ref_urls = tilenames[last_channel]
+    for entry in reference_layer["source"]:
+        matrix = np.asarray(entry["transform"]["matrix"], dtype=float)
+        point = matrix[3:, -1:]
+        distances.append(float(np.linalg.norm(point)))
+    order = np.argsort(distances)
+    tilenames[last_channel] = [ref_urls[idx] for idx in order]
 
-                    json_data['layers'][1]['source'][0]['transform']['matrix'][-1][-1] -= json_data['layers'][3]['source'][0]['transform']['matrix'][-1][-1] 
-                    json_data['layers'][1]['source'][0]['transform']['matrix'][-2][-1] -= json_data['layers'][3]['source'][0]['transform']['matrix'][-2][-1]
+    # Replicate ordering for the remaining channels via string replacement
+    ref_suffix = last_channel.split("_")[1]
+    for channel in ordered_channels[:-1]:
+        suffix = channel.split("_")[1]
+        tilenames[channel] = [url.replace(ref_suffix, suffix) for url in tilenames[last_channel]]
 
-                    json_data['layers'][2]['source'][0]['transform']['matrix'][-1][-1] = 0
-                    json_data['layers'][2]['source'][0]['transform']['matrix'][-2][-1] = 0
-                    json_data['layers'][3]['source'][0]['transform']['matrix'][-1][-1] = 0
-                    json_data['layers'][3]['source'][0]['transform']['matrix'][-2][-1] = 0
+    return tilenames, affine_matrices
 
-                    output_filename = f"cc_ng_{pair[0]}_{pair[1]}_{tilename.split('/')[-1][:18]}_x{x_loc}_y{y_loc}_z{z_loc}_zoomed.json"
-                    output_path = os.path.join(output_dir_json,output_filename)
-                    with open(output_path, "w") as f:
-                        json.dump(json_data, f, indent=2)
-                    ng_link = f"https://neuroglancer-demo.appspot.com/#!s3://aind-open-data/{data_asset}/image_cross_image_alignment/{output_filename}"
-        
-                    ax = fig.add_subplot(gs[0])
-                    img = np.zeros((tile_1_clip.shape[0], tile_1_clip.shape[1],3), dtype=np.float32)
-                    img[:,:,0] = np.clip((tile_1_clip.astype(np.float32)- vmin_1) / (vmax_1 - vmin_1),0,1)
-                    img[:,:,1] = np.clip((tile_2_clip.astype(np.float32)- vmin_2) / (vmax_2 - vmin_2),0,1)
-                    ax.imshow(img, aspect='auto')
-                    ax.text(0, 0, 'Pre-correction', color='w', fontsize=20,  horizontalalignment='left',verticalalignment='top')
 
-                    ax.axis('off')
+def _create_pair_templates(
+    template_data: Dict,
+    cc_layers: Dict[str, Dict],
+    rc_layers: Dict[str, Dict],
+    channel_pairs: Sequence[Tuple[str, str]],
+    output_dir: Path,
+) -> Dict[Tuple[str, str], Path]:
+    pair_template_paths: Dict[Tuple[str, str], Path] = {}
 
-                    ax = fig.add_subplot(gs[1])
+    for channel_a, channel_b in channel_pairs:
+        template = copy.deepcopy(template_data)
 
-                    vmin_1 = np.percentile(tile_1_transformed_clip, 10)
-                    vmax_1 = np.percentile(tile_1_transformed_clip, 99.99)
-                    vmin_2 = np.percentile(tile_2_transformed_clip, 10)
-                    vmax_2 = np.percentile(tile_2_transformed_clip, 99.99)
+        layer_a_cc = copy.deepcopy(cc_layers[channel_a])
+        layer_a_cc["shader"] = (
+            "#uicontrol vec3 color color(default=\"#ff0000\")\n"
+            "#uicontrol invlerp normalized\n"
+            "void main() {\n"
+            "emitRGB(color * normalized());\n"
+            "}"
+        )
 
-                    img = np.zeros((tile_1_transformed_clip.shape[0], tile_1_transformed_clip.shape[1],3), dtype=np.float32)
-                    img[:,:,0] = np.clip((tile_1_transformed_clip.astype(np.float32)- vmin_1) / (vmax_1 - vmin_1),0,1)
-                    img[:,:,1] = np.clip((tile_2_transformed_clip.astype(np.float32)- vmin_2) / (vmax_2 - vmin_2),0,1)
-                    ax.imshow(img, aspect='auto')
-                    ax.text(0, 0, 'Post-correction', color='w', fontsize=20,  horizontalalignment='left',verticalalignment='top')
+        layer_b_cc = copy.deepcopy(cc_layers[channel_b])
+        layer_b_cc["shader"] = (
+            "#uicontrol vec3 color color(default=\"#00ff00\")\n"
+            "#uicontrol invlerp normalized\n"
+            "void main() {\n"
+            "emitRGB(color * normalized());\n"
+            "}"
+        )
 
-                    ax.axis('off')
+        layer_a_rc = copy.deepcopy(rc_layers[channel_a])
+        layer_a_rc["shader"] = (
+            "#uicontrol vec3 color color(default=\"#00ff00\")\n"
+            "#uicontrol invlerp normalized\n"
+            "void main() {\n"
+            "emitRGB(color * normalized());\n"
+            "}"
+        )
 
-                    plt.suptitle(f'{c1.replace("CH_","")} vs. {c2.replace("CH_","")}, tile = {'_'.join(tilename_1.split('/')[-1].split('_')[1:5]).replace('_Y','-Y').replace('_0','')} - x={x_loc}, y={y_loc}, z={z_loc}',y=.95, fontsize = 18)
-                    fig.text(0.9, 0.08, 'neuroglancer link', 
-                    ha='right', # Horizontal alignment
-                    color='blue', 
-                    url=ng_link)
-                    pdf_filename = os.path.join(output_dir_pdf, f"{c1.replace('CH_','')}vs{c2.replace('CH_','')}_{tilename_1.split('/')[-1][:18]}_x{x_loc}_y{y_loc}_z{z_loc}.pdf")
-                    with PdfPages(pdf_filename) as pdf:
-                        pdf.savefig(fig, bbox_inches='tight')
-                    fig.savefig(os.path.join(output_dir_png, f"{c1.replace('CH_','')}vs{c2.replace('CH_','')}_{tilename_1.split('/')[-1][:18]}_x{x_loc}_y{y_loc}_z{z_loc}.png"), dpi=200)
-                    plt.close()
+        layer_b_rc = copy.deepcopy(rc_layers[channel_b])
+        layer_b_rc["shader"] = (
+            "#uicontrol vec3 color color(default=\"#ff0000\")\n"
+            "#uicontrol invlerp normalized\n"
+            "void main() {\n"
+            "emitRGB(color * normalized());\n"
+            "}"
+        )
 
-    for pair in channel_names_paired:
-        print(f"Merging pdfs pair {pair[0]} vs {pair[1]}")
+        template["layers"] = [layer_a_cc, layer_b_cc, layer_a_rc, layer_b_rc]
+        template["dimensions"] = template.get("dimensions", {})
 
-        pdf_list = [os.path.join(output_dir_pdf, f) for f in os.listdir(output_dir_pdf) if f.endswith('.pdf') if pair[0].replace('CH_','') in f and pair[1].replace('CH_','') in f]
-        merge_pdfs(pdf_list, os.path.join(output_dir, f"{pair[0].replace('CH_','')}vs{pair[1].replace('CH_','')}_merged.pdf"))
+        output_path = output_dir / f"cc_ng_{channel_a}_{channel_b}.json"
+        with output_path.open("w", encoding="utf-8") as handle:
+            json.dump(template, handle, indent=2)
 
-if __name__=='__main__': 
-    make_files_and_ng_links()
+        pair_template_paths[(channel_a, channel_b)] = output_path
+
+    return pair_template_paths
+
+
+def _load_tile_stack(
+    tilename_s3: str,
+    data_dir: Path,
+    planes: Sequence[int],
+    pyramid_level: str,
+) -> np.ndarray:
+    local_path = convert_s3_to_local(tilename_s3, data_dir)
+    tile_zarr = da.from_zarr(local_path.as_posix(), pyramid_level)
+    # Expecting shape (C, T, Z, Y, X); select first channel/time to mirror scientist code
+    tile_stack = tile_zarr[0, 0, planes, ...].compute()
+    return np.asarray(tile_stack)
+
+
+def _apply_affine_stack(stack: np.ndarray, affine: np.ndarray) -> np.ndarray:
+    transformed = np.zeros_like(stack, dtype=np.float32)
+    for index, plane in enumerate(stack):
+        transformed[index, ...] = tf.warp(plane, affine, output_shape=plane.shape)
+    return transformed
+
+
+def _compute_planes(tile_shape: Tuple[int, int, int]) -> Tuple[np.ndarray, int, int]:
+    z_dim, y_dim, x_dim = tile_shape
+    thickness = z_dim // 3
+    spacing = max(1, z_dim // 5)
+    planes = np.arange((z_dim - thickness) // 2, (z_dim + thickness) // 2, spacing)
+    return planes, y_dim, x_dim
+
+
+def _generate_histogram_axes(
+    num_planes: int,
+    num_tiles: int,
+    num_pairs: int,
+) -> Tuple[np.ndarray, np.ndarray, plt.Figure, plt.Figure]:
+    if num_planes == 0 or num_tiles == 0 or num_pairs == 0:
+        return (
+            np.empty((0, 0)),
+            np.empty((0, 0)),
+            plt.figure(),
+            plt.figure(),
+        )
+
+    rows = num_planes * num_tiles
+    fig_hist, axs_hist = plt.subplots(
+        rows,
+        num_pairs,
+        figsize=(5 * num_pairs, 5 * rows),
+    )
+    fig_scatter, axs_scatter = plt.subplots(
+        rows,
+        num_pairs,
+        figsize=(5 * num_pairs, 5 * rows),
+    )
+    return (
+        np.atleast_2d(axs_hist),
+        np.atleast_2d(axs_scatter),
+        fig_hist,
+        fig_scatter,
+    )
+
+
+def _update_histograms(
+    ax_hist: plt.Axes,
+    ax_scatter: plt.Axes,
+    title: str,
+    correspond_points_1: np.ndarray,
+    correspond_points_2: np.ndarray,
+    affine_1: np.ndarray,
+    affine_2: np.ndarray,
+) -> None:
+    if correspond_points_1.size == 0 or correspond_points_2.size == 0:
+        ax_hist.set_xticks([])
+        ax_hist.set_yticks([])
+        ax_scatter.set_xticks([])
+        ax_scatter.set_yticks([])
+        return
+
+    homogeneous_1 = np.vstack([correspond_points_1.T, np.ones(correspond_points_1.shape[0])])
+    homogeneous_2 = np.vstack([correspond_points_2.T, np.ones(correspond_points_2.shape[0])])
+
+    transformed_1 = (affine_1 @ homogeneous_1)[:2, :].T.astype(int)
+    transformed_2 = (affine_2 @ homogeneous_2)[:2, :].T.astype(int)
+
+    distance_pre = np.linalg.norm(correspond_points_1 - correspond_points_2, axis=1)
+    distance_post = np.linalg.norm(transformed_1 - transformed_2, axis=1)
+
+    ax_hist.hist(distance_pre, 10, alpha=0.5, label="pre-correction", color="r")
+    ax_hist.hist(distance_post, 10, alpha=0.5, label="post-correction", color="g")
+    ax_hist.legend()
+    ax_hist.set_xlabel("distance (pixels)")
+    ax_hist.set_ylabel("number of points")
+    ax_hist.set_title(title)
+
+    max_dist = float(np.max(np.hstack([distance_pre, distance_post])))
+    ax_scatter.scatter(distance_pre, distance_post)
+    ax_scatter.plot([0, max_dist], [0, max_dist], "k--", alpha=0.5)
+    ax_scatter.set_xlabel("distance pre-correction (pixels)")
+    ax_scatter.set_ylabel("distance post-correction (pixels)")
+    ax_scatter.set_title(title)
+
+
+def _find_peak_regions(
+    points_1: np.ndarray,
+    points_2: np.ndarray,
+    n_bins: int,
+    tile_height: int,
+    tile_width: int,
+    top_n_points: int,
+) -> np.ndarray:
+    if points_1.size == 0 or points_2.size == 0:
+        return np.empty((0, 2))
+
+    hist_1 = gaussian_filter(
+        np.histogram2d(
+            points_1[:, 0],
+            points_1[:, 1],
+            bins=n_bins,
+            range=[[0, tile_height], [0, tile_width]],
+        )[0],
+        sigma=1,
+    )
+    hist_2 = gaussian_filter(
+        np.histogram2d(
+            points_2[:, 0],
+            points_2[:, 1],
+            bins=n_bins,
+            range=[[0, tile_height], [0, tile_width]],
+        )[0],
+        sigma=1,
+    )
+
+    combined = hist_1 + hist_2
+    peak_indices = peak_local_max(
+        combined,
+        min_distance=2,
+        threshold_rel=0.2,
+        num_peaks=top_n_points,
+    )
+
+    if peak_indices.size == 0:
+        return np.empty((0, 2))
+
+    x_locs = (
+        np.linspace(0, tile_width, n_bins + 1)[1:] +
+        np.linspace(0, tile_width, n_bins + 1)[:-1]
+    ) // 2
+    y_locs = (
+        np.linspace(0, tile_height, n_bins + 1)[1:] +
+        np.linspace(0, tile_height, n_bins + 1)[:-1]
+    ) // 2
+
+    return np.array([(x_locs[idx[1]], y_locs[idx[0]]) for idx in peak_indices])
+
+
+def _normalise_channel_range(image: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
+    clipped = np.clip(image, vmin, vmax)
+    normalised = (clipped - vmin) / (vmax - vmin)
+    return normalised.astype(np.float32)
+
+
+def _apply_intensity_scaling(
+    layer: Dict,
+    intensity_range: Tuple[float, float],
+    visible: bool,
+) -> None:
+    layer.setdefault("shaderControls", {}).setdefault("normalized", {})["range"] = [
+        float(intensity_range[0]),
+        float(intensity_range[1]),
+    ]
+    layer["visible"] = visible
+
+
+def _adjust_transform_offsets(json_data: Dict) -> None:
+    layers = json_data["layers"]
+    cc_a, cc_b, rc_a, rc_b = layers
+
+    cc_a_matrix = cc_a["source"][0]["transform"]["matrix"]
+    cc_b_matrix = cc_b["source"][0]["transform"]["matrix"]
+    rc_a_matrix = rc_a["source"][0]["transform"]["matrix"]
+    rc_b_matrix = rc_b["source"][0]["transform"]["matrix"]
+
+    cc_a_matrix[-1][-1] -= rc_a_matrix[-1][-1]
+    cc_a_matrix[-2][-1] -= rc_a_matrix[-2][-1]
+    cc_b_matrix[-1][-1] -= rc_b_matrix[-1][-1]
+    cc_b_matrix[-2][-1] -= rc_b_matrix[-2][-1]
+
+    rc_a_matrix[-1][-1] = 0.0
+    rc_a_matrix[-2][-1] = 0.0
+    rc_b_matrix[-1][-1] = 0.0
+    rc_b_matrix[-2][-1] = 0.0
+
+
+def _create_zoom_visualisation(
+    channel_pair: Tuple[str, str],
+    dataset_name: str,
+    tile_index: int,
+    plane_index: int,
+    plane_value: int,
+    peaks: np.ndarray,
+    tilenames: Dict[str, List[str]],
+    pair_template_path: Path,
+    output_dirs: Tuple[Path, Path, Path, Path],
+    data_dir: Path,
+    settings: QCSettings,
+    tile_1_stack: np.ndarray,
+    tile_2_stack: np.ndarray,
+    tile_1_transformed: np.ndarray,
+    tile_2_transformed: np.ndarray,
+) -> None:
+    output_dir, png_dir, pdf_dir, json_dir = output_dirs
+    channel_a, channel_b = channel_pair
+
+    for peak in peaks:
+        x_loc = int(peak[0])
+        y_loc = int(peak[1])
+
+        y_slice = _clamp_slice(y_loc, settings.clip_half_width, tile_1_stack.shape[1])
+        x_slice = _clamp_slice(x_loc, settings.clip_half_width, tile_1_stack.shape[2])
+
+        tile_1_clip = tile_1_stack[plane_index, y_slice, x_slice]
+        tile_2_clip = tile_2_stack[plane_index, y_slice, x_slice]
+        tile_1_transformed_clip = tile_1_transformed[plane_index, y_slice, x_slice]
+        tile_2_transformed_clip = tile_2_transformed[plane_index, y_slice, x_slice]
+
+        vmin_1, vmax_1 = np.percentile(tile_1_clip, [10, 99.99])
+        vmin_2, vmax_2 = np.percentile(tile_2_clip, [10, 99.99])
+        vmin_1_trans, vmax_1_trans = np.percentile(tile_1_transformed_clip, [10, 99.99])
+        vmin_2_trans, vmax_2_trans = np.percentile(tile_2_transformed_clip, [10, 99.99])
+
+        base_json = load_json(pair_template_path)
+        for layer in base_json["layers"]:
+            if layer["name"].startswith(channel_a):
+                target_url = tilenames[channel_a][tile_index]
+                layer["source"] = [s for s in layer["source"] if s["url"] == target_url]
+                if layer["name"].endswith("_cc"):
+                    _apply_intensity_scaling(layer, (vmin_1_trans, vmax_1_trans), True)
+                else:
+                    _apply_intensity_scaling(layer, (vmin_1, vmax_1), False)
+            elif layer["name"].startswith(channel_b):
+                target_url = tilenames[channel_b][tile_index]
+                layer["source"] = [s for s in layer["source"] if s["url"] == target_url]
+                if layer["name"].endswith("_cc"):
+                    _apply_intensity_scaling(layer, (vmin_2_trans, vmax_2_trans), True)
+                else:
+                    _apply_intensity_scaling(layer, (vmin_2, vmax_2), False)
+
+        base_json["position"] = [x_loc, y_loc, int(plane_value), 0]
+        base_json["crossSectionScale"] = settings.cross_section_scale
+        base_json["projectionScale"] = settings.projection_scale
+
+        _adjust_transform_offsets(base_json)
+
+        tile_token = Path(tilenames[channel_a][tile_index]).name[:18]
+        json_filename = (
+            f"cc_ng_{channel_a}_{channel_b}_{tile_token}_x{x_loc}_y{y_loc}_z{plane_value}_zoomed.json"
+        )
+        json_path = json_dir / json_filename
+        with json_path.open("w", encoding="utf-8") as handle:
+            json.dump(base_json, handle, indent=2)
+
+        ng_link = (
+            "https://neuroglancer-demo.appspot.com/#!"
+            f"s3://aind-open-data/{dataset_name}/image_cross_image_alignment/{json_filename}"
+        )
+
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+        fig.suptitle(
+            (
+                f"{channel_a.replace('CH_', '')} vs. {channel_b.replace('CH_', '')}, "
+                f"tile = {tile_token} - x={x_loc}, y={y_loc}, z={plane_value}"
+            ),
+            y=0.95,
+        )
+
+        pre_rgb = np.zeros((tile_1_clip.shape[0], tile_1_clip.shape[1], 3), dtype=np.float32)
+        pre_rgb[..., 0] = _normalise_channel_range(tile_1_clip, vmin_1, vmax_1)
+        pre_rgb[..., 1] = _normalise_channel_range(tile_2_clip, vmin_2, vmax_2)
+
+        post_rgb = np.zeros((tile_1_transformed_clip.shape[0], tile_1_transformed_clip.shape[1], 3), dtype=np.float32)
+        post_rgb[..., 0] = _normalise_channel_range(tile_1_transformed_clip, vmin_1_trans, vmax_1_trans)
+        post_rgb[..., 1] = _normalise_channel_range(tile_2_transformed_clip, vmin_2_trans, vmax_2_trans)
+
+        axes[0].imshow(pre_rgb, aspect="auto")
+        axes[0].set_title("Pre-correction")
+        axes[0].axis("off")
+
+        axes[1].imshow(post_rgb, aspect="auto")
+        axes[1].set_title("Post-correction")
+        axes[1].axis("off")
+
+        fig.text(0.9, 0.08, "neuroglancer link", ha="right", color="blue", url=ng_link)
+
+        pdf_filename = (
+            f"{channel_a.replace('CH_', '')}vs{channel_b.replace('CH_', '')}_{tile_token}"
+            f"_x{x_loc}_y{y_loc}_z{plane_value}.pdf"
+        )
+        png_filename = pdf_filename.replace(".pdf", ".png")
+
+        pdf_path = pdf_dir / pdf_filename
+        png_path = png_dir / png_filename
+
+        if PdfPages is None:  # pragma: no cover - guarded earlier
+            raise RuntimeError("PdfPages unavailable; cannot write QC PDFs.")
+
+        with PdfPages(pdf_path) as pdf:
+            pdf.savefig(fig, bbox_inches="tight")
+        fig.savefig(png_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+
+def _process_channel_pair(
+    channel_pair: Tuple[str, str],
+    dataset_name: str,
+    tile_index: int,
+    tile_row_index: int,
+    planes: Sequence[int],
+    axs_hist: np.ndarray,
+    axs_scatter: np.ndarray,
+    settings: QCSettings,
+    tilenames: Dict[str, List[str]],
+    affine_matrices: Dict[str, np.ndarray],
+    output_dirs: Tuple[Path, Path, Path, Path],
+    pair_template_paths: Dict[Tuple[str, str], Path],
+    data_dir: Path,
+    tile_height: int,
+    tile_width: int,
+    channel_cache: Dict[Tuple[str, int], Tuple[np.ndarray, np.ndarray]],
+) -> None:
+    channel_a, channel_b = channel_pair
+
+    def fetch_channel_stack(channel: str) -> Tuple[np.ndarray, np.ndarray]:
+        key = (channel, tile_index)
+        if key not in channel_cache:
+            stack = _load_tile_stack(
+                tilenames[channel][tile_index],
+                data_dir,
+                planes,
+                settings.pyramid_level,
+            )
+            transformed = _apply_affine_stack(stack, affine_matrices[channel])
+            channel_cache[key] = (stack, transformed)
+        return channel_cache[key]
+
+    tile_1_stack, tile_1_transformed = fetch_channel_stack(channel_a)
+    tile_2_stack, tile_2_transformed = fetch_channel_stack(channel_b)
+
+    peaks_per_plane: Dict[int, np.ndarray] = {}
+
+    for plane_offset, plane_value in enumerate(planes):
+        row_index = tile_row_index * len(planes) + plane_offset
+        ax_hist_row = axs_hist[row_index]
+        ax_scatter_row = axs_scatter[row_index]
+        pair_index = list(pair_template_paths.keys()).index(channel_pair)
+        ax_hist = ax_hist_row[pair_index]
+        ax_scatter = ax_scatter_row[pair_index]
+
+        title = (
+            f"{channel_a.replace('CH_', '')} vs. {channel_b.replace('CH_', '')}, "
+            f"tile {tile_index} - z={plane_value}"
+        )
+
+        points_1 = blob_dog(
+            tile_1_stack[plane_offset, ...].T.astype(np.float32),
+            min_sigma=1,
+            max_sigma=1.5,
+            threshold=settings.dot_threshold,
+        )
+        points_2 = blob_dog(
+            tile_2_stack[plane_offset, ...].T.astype(np.float32),
+            min_sigma=1,
+            max_sigma=1.5,
+            threshold=settings.dot_threshold,
+        )
+
+        if points_1.size == 0 or points_2.size == 0:
+            _update_histograms(ax_hist, ax_scatter, title, np.empty((0, 2)), np.empty((0, 2)), affine_matrices[channel_a], affine_matrices[channel_b])
+            peaks_per_plane[plane_value] = np.empty((0, 2))
+            continue
+
+        intensities_1 = tile_1_stack[plane_offset, ...].T[
+            points_1[:, 0].astype(np.uint16), points_1[:, 1].astype(np.uint16)
+        ]
+        intensities_2 = tile_2_stack[plane_offset, ...].T[
+            points_2[:, 0].astype(np.uint16), points_2[:, 1].astype(np.uint16)
+        ]
+
+        points_1 = points_1[np.flip(np.argsort(intensities_1))[: settings.dot_num], :-1]
+        points_2 = points_2[np.flip(np.argsort(intensities_2))[: settings.dot_num], :-1]
+
+        correspond_indices = match_descriptors(
+            points_1,
+            points_2,
+            max_distance=6,
+            max_ratio=0.8,
+        )
+
+        if correspond_indices.size == 0:
+            _update_histograms(ax_hist, ax_scatter, title, np.empty((0, 2)), np.empty((0, 2)), affine_matrices[channel_a], affine_matrices[channel_b])
+            peaks_per_plane[plane_value] = np.empty((0, 2))
+            continue
+
+        correspond_points_1 = points_1[correspond_indices[:, 0], :]
+        correspond_points_2 = points_2[correspond_indices[:, 1], :]
+
+        _update_histograms(
+            ax_hist,
+            ax_scatter,
+            title,
+            correspond_points_1,
+            correspond_points_2,
+            affine_matrices[channel_a],
+            affine_matrices[channel_b],
+        )
+
+        peak_regions = _find_peak_regions(
+            correspond_points_1,
+            correspond_points_2,
+            settings.n_bins,
+            tile_height,
+            tile_width,
+            settings.top_n_points,
+        )
+        peaks_per_plane[plane_value] = peak_regions
+
+    for plane_offset, plane_value in enumerate(planes):
+        peak_regions = peaks_per_plane.get(plane_value, np.empty((0, 2)))
+        if peak_regions.size == 0:
+            continue
+        _create_zoom_visualisation(
+            channel_pair,
+            dataset_name,
+            tile_index,
+            plane_offset,
+            int(plane_value),
+            peak_regions,
+            tilenames,
+            pair_template_paths[channel_pair],
+            output_dirs,
+            data_dir,
+            settings,
+            tile_1_stack,
+            tile_2_stack,
+            tile_1_transformed,
+            tile_2_transformed,
+        )
+
+
+def _merge_pair_pdfs(
+    channel_pairs: Sequence[Tuple[str, str]],
+    pdf_dir: Path,
+    output_dir: Path,
+) -> None:
+    for channel_a, channel_b in channel_pairs:
+        pdf_list = [
+            pdf_path
+            for pdf_path in pdf_dir.glob("*.pdf")
+            if channel_a.replace("CH_", "") in pdf_path.name
+            and channel_b.replace("CH_", "") in pdf_path.name
+        ]
+        if not pdf_list:
+            continue
+        merged_path = output_dir / (
+            f"{channel_a.replace('CH_', '')}vs{channel_b.replace('CH_', '')}_merged.pdf"
+        )
+        merge_pdfs(pdf_list, merged_path)
+
+
+def generate_camera_alignment_qc(
+    dataset_names: Optional[Sequence[str]] = None,
+    *,
+    data_dir: Path = DEFAULT_DATA_DIR,
+    scratch_root: Path = DEFAULT_SCRATCH_ROOT,
+    template_path: Path = DEFAULT_TEMPLATE_PATH,
+    settings: Optional[QCSettings] = None,
+) -> Dict[str, Path]:
+    """Generate QC artefacts for one or more datasets.
+
+    Parameters
+    ----------
+    dataset_names:
+        Specific dataset names to process. If omitted, all datasets containing
+        `image_radial_correction` are processed.
+    data_dir:
+        Root directory containing dataset folders and neuroglancer JSON files.
+    scratch_root:
+        Destination for generated QC artefacts.
+    template_path:
+        Path to the neuroglancer layer template JSON file.
+    settings:
+        Optional QCSettings override.
+
+    Returns
+    -------
+    dict
+        Mapping from dataset name to the output directory containing QC results.
+    """
+
+    ensure_advanced_qc_available()
+    settings = settings or QCSettings()
+
+    datasets = _resolve_datasets(dataset_names, data_dir)
+    if not datasets:
+        raise FileNotFoundError("No datasets found for QC processing.")
+
+    template_data = load_json(template_path)
+    results: Dict[str, Path] = {}
+
+    for dataset_path in datasets:
+        dataset_name = dataset_path.name
+        LOGGER.info("Processing camera-alignment QC for dataset %s", dataset_name)
+
+        cc_json = dataset_path / "camera_aligned_neuroglancer.json"
+        rc_json = dataset_path / "radial_correction_neuroglancer.json"
+
+        if not cc_json.exists() or not rc_json.exists():
+            raise FileNotFoundError(
+                f"Required neuroglancer JSON files missing for {dataset_name}: "
+                f"{cc_json}, {rc_json}"
+            )
+
+        cc_data = load_json(cc_json)
+        rc_data = load_json(rc_json)
+
+        channel_names = sorted(layer["name"] for layer in cc_data["layers"])
+        if "CH_405" in channel_names:
+            channel_names.remove("CH_405")
+        if len(channel_names) < 2:
+            raise ValueError("QC generation requires at least two channels.")
+
+        channel_pairs = [
+            (channel_names[idx], channel_names[idx + 1])
+            for idx in range(len(channel_names) - 1)
+        ]
+
+        cc_layers, rc_layers = _prepare_channel_layers(cc_data, rc_data, channel_names)
+        tilenames, affine_matrices = _extract_affine_metadata(cc_layers, channel_names)
+
+        output_dirs = _prepare_output_dirs(scratch_root, dataset_name)
+        output_dir, _, pdf_dir, _ = output_dirs
+
+        pair_template_paths = _create_pair_templates(
+            template_data,
+            cc_layers,
+            rc_layers,
+            channel_pairs,
+            output_dir,
+        )
+
+        first_channel = channel_names[0]
+        example_tile = convert_s3_to_local(tilenames[first_channel][0], data_dir)
+        tile_shape = da.from_zarr(example_tile.as_posix(), settings.pyramid_level).shape[2:]
+        planes, tile_height, tile_width = _compute_planes(tile_shape)
+
+        tiles_available = len(tilenames[first_channel])
+        tiles_to_process = [
+            idx for idx in settings.tiles_to_check if idx < tiles_available
+        ]
+
+        if not tiles_to_process:
+            LOGGER.warning(
+                "No tiles available within configured indices %s for dataset %s",
+                settings.tiles_to_check,
+                dataset_name,
+            )
+            continue
+
+        axs_hist, axs_scatter, fig_hist, fig_scatter = _generate_histogram_axes(
+            len(planes),
+            len(tiles_to_process),
+            len(channel_pairs),
+        )
+
+        channel_cache: Dict[Tuple[str, int], Tuple[np.ndarray, np.ndarray]] = {}
+
+        for tile_row_index, tile_index in enumerate(tiles_to_process):
+            for channel_pair in channel_pairs:
+                _process_channel_pair(
+                    channel_pair,
+                    dataset_name,
+                    tile_index,
+                    tile_row_index,
+                    planes,
+                    axs_hist,
+                    axs_scatter,
+                    settings,
+                    tilenames,
+                    affine_matrices,
+                    output_dirs,
+                    pair_template_paths,
+                    data_dir,
+                    tile_height,
+                    tile_width,
+                    channel_cache,
+                )
+
+        plt.close(fig_hist)
+        plt.close(fig_scatter)
+
+        _merge_pair_pdfs(channel_pairs, pdf_dir, output_dir)
+        results[dataset_name] = output_dir
+
+    return results
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    generate_camera_alignment_qc()
