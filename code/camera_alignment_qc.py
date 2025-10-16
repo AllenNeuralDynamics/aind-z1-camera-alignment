@@ -136,7 +136,8 @@ def merge_pdfs(pdf_paths: Sequence[Path], output_path: Path) -> None:
     """Merge multiple PDF files into a single PDF if PyPDF2 is available."""
 
     if PdfMerger is None:
-        LOGGER.warning("PyPDF2 unavailable; skipping PDF merge for %s", output_path)
+        LOGGER.warning(
+            "PyPDF2 unavailable; skipping PDF merge for %s", output_path)
         return
 
     merger = PdfMerger()
@@ -159,7 +160,7 @@ def convert_s3_to_local(url: str, data_dir: Path) -> Path:
 
     if not url.startswith(AIND_S3_PREFIX):
         return Path(url)
-    relative = url[len(AIND_S3_PREFIX) :].lstrip("/")
+    relative = url[len(AIND_S3_PREFIX):].lstrip("/")
     return data_dir / relative
 
 
@@ -206,13 +207,15 @@ def _prepare_channel_layers(
 
     for channel in channel_names:
         cc_layer = copy.deepcopy(
-            next(layer for layer in cc_data["layers"] if layer["name"] == channel)
+            next(layer for layer in cc_data["layers"]
+                 if layer["name"] == channel)
         )
         cc_layer["name"] = f"{channel}_cc"
         cc_layers[channel] = cc_layer
 
         rc_layer = copy.deepcopy(
-            next(layer for layer in rc_data["layers"] if layer["name"] == channel)
+            next(layer for layer in rc_data["layers"]
+                 if layer["name"] == channel)
         )
         rc_layer["name"] = f"{channel}_rc"
         rc_layers[channel] = rc_layer
@@ -240,7 +243,8 @@ def _extract_affine_metadata(
         reference_source = next(
             entry for entry in layer["source"] if first_tile_token in entry["url"]
         )
-        matrix = np.asarray(reference_source["transform"]["matrix"], dtype=float)
+        matrix = np.asarray(
+            reference_source["transform"]["matrix"], dtype=float)
         affine = matrix[2:, 2:]
         affine[:, 3] += affine[:, 0]
         affine = affine[:, 1:]
@@ -263,7 +267,8 @@ def _extract_affine_metadata(
     ref_suffix = last_channel.split("_")[1]
     for channel in ordered_channels[:-1]:
         suffix = channel.split("_")[1]
-        tilenames[channel] = [url.replace(ref_suffix, suffix) for url in tilenames[last_channel]]
+        tilenames[channel] = [url.replace(
+            ref_suffix, suffix) for url in tilenames[last_channel]]
 
     return tilenames, affine_matrices
 
@@ -355,7 +360,8 @@ def _compute_planes(tile_shape: Tuple[int, int, int]) -> Tuple[np.ndarray, int, 
     z_dim, y_dim, x_dim = tile_shape
     thickness = z_dim // 3
     spacing = max(1, z_dim // 5)
-    planes = np.arange((z_dim - thickness) // 2, (z_dim + thickness) // 2, spacing)
+    planes = np.arange((z_dim - thickness) // 2,
+                       (z_dim + thickness) // 2, spacing)
     return planes, y_dim, x_dim
 
 
@@ -418,18 +424,16 @@ def create_distance_plots(
             (points_2.T, np.ones((1, points_2.shape[0]))),
             axis=0,
         )
-        #invert from previous inversion for matplotlib plots
-        affine_1 = np.linalg.inv(affine_1)
-        affine_2 = np.linalg.inv(affine_2)
-
         transformed_1 = (affine_1 @ homogeneous_1)[:2, :].T.astype(int)
         transformed_2 = (affine_2 @ homogeneous_2)[:2, :].T.astype(int)
 
         distance_pre = np.linalg.norm(points_1 - points_2, axis=1)
         distance_post = np.linalg.norm(transformed_1 - transformed_2, axis=1)
 
-        ax_hist.hist(distance_pre, 10, alpha=0.5, label="pre-correction", color="r")
-        ax_hist.hist(distance_post, 10, alpha=0.5, label="post-correction", color="g")
+        ax_hist.hist(distance_pre, 10, alpha=0.5,
+                     label="pre-correction", color="r")
+        ax_hist.hist(distance_post, 10, alpha=0.5,
+                     label="post-correction", color="g")
         ax_hist.legend()
         ax_hist.set_xlabel("distance (pixels)")
         ax_hist.set_ylabel("number of points")
@@ -442,7 +446,8 @@ def create_distance_plots(
         ax_scatter.set_ylabel("distance post-correction (pixels)")
         ax_scatter.set_title(title)
     except Exception as exc:  # pragma: no cover - runtime diagnostics
-        LOGGER.error("Failed to create distance plots for %s", title, exc_info=exc)
+        LOGGER.error("Failed to create distance plots for %s",
+                     title, exc_info=exc)
 
 
 def _find_peak_regions(
@@ -561,33 +566,43 @@ def _create_zoom_visualisation(
         x_loc = int(peak[0])
         y_loc = int(peak[1])
 
-        y_slice = _clamp_slice(y_loc, settings.clip_half_width, tile_1_stack.shape[1])
-        x_slice = _clamp_slice(x_loc, settings.clip_half_width, tile_1_stack.shape[2])
+        y_slice = _clamp_slice(
+            y_loc, settings.clip_half_width, tile_1_stack.shape[1])
+        x_slice = _clamp_slice(
+            x_loc, settings.clip_half_width, tile_1_stack.shape[2])
 
         tile_1_clip = tile_1_stack[plane_index, y_slice, x_slice]
         tile_2_clip = tile_2_stack[plane_index, y_slice, x_slice]
-        tile_1_transformed_clip = tile_1_transformed[plane_index, y_slice, x_slice]
-        tile_2_transformed_clip = tile_2_transformed[plane_index, y_slice, x_slice]
+        tile_1_transformed_clip = tile_1_transformed[plane_index,
+                                                     y_slice, x_slice]
+        tile_2_transformed_clip = tile_2_transformed[plane_index,
+                                                     y_slice, x_slice]
 
         vmin_1, vmax_1 = np.percentile(tile_1_clip, [10, 99.99])
         vmin_2, vmax_2 = np.percentile(tile_2_clip, [10, 99.99])
-        vmin_1_trans, vmax_1_trans = np.percentile(tile_1_transformed_clip, [10, 99.99])
-        vmin_2_trans, vmax_2_trans = np.percentile(tile_2_transformed_clip, [10, 99.99])
+        vmin_1_trans, vmax_1_trans = np.percentile(
+            tile_1_transformed_clip, [10, 99.99])
+        vmin_2_trans, vmax_2_trans = np.percentile(
+            tile_2_transformed_clip, [10, 99.99])
 
         base_json = load_json(pair_template_path)
         for layer in base_json["layers"]:
             if layer["name"].startswith(channel_a):
                 target_url = tilenames[channel_a][tile_index]
-                layer["source"] = [s for s in layer["source"] if s["url"] == target_url]
+                layer["source"] = [s for s in layer["source"]
+                                   if s["url"] == target_url]
                 if layer["name"].endswith("_cc"):
-                    _apply_intensity_scaling(layer, (vmin_1_trans, vmax_1_trans), True)
+                    _apply_intensity_scaling(
+                        layer, (vmin_1_trans, vmax_1_trans), True)
                 else:
                     _apply_intensity_scaling(layer, (vmin_1, vmax_1), False)
             elif layer["name"].startswith(channel_b):
                 target_url = tilenames[channel_b][tile_index]
-                layer["source"] = [s for s in layer["source"] if s["url"] == target_url]
+                layer["source"] = [s for s in layer["source"]
+                                   if s["url"] == target_url]
                 if layer["name"].endswith("_cc"):
-                    _apply_intensity_scaling(layer, (vmin_2_trans, vmax_2_trans), True)
+                    _apply_intensity_scaling(
+                        layer, (vmin_2_trans, vmax_2_trans), True)
                 else:
                     _apply_intensity_scaling(layer, (vmin_2, vmax_2), False)
 
@@ -627,13 +642,17 @@ def _create_zoom_visualisation(
             y=0.95,
         )
 
-        pre_rgb = np.zeros((tile_1_clip.shape[0], tile_1_clip.shape[1], 3), dtype=np.float32)
+        pre_rgb = np.zeros(
+            (tile_1_clip.shape[0], tile_1_clip.shape[1], 3), dtype=np.float32)
         pre_rgb[..., 0] = _normalise_channel_range(tile_1_clip, vmin_1, vmax_1)
         pre_rgb[..., 1] = _normalise_channel_range(tile_2_clip, vmin_2, vmax_2)
 
-        post_rgb = np.zeros((tile_1_transformed_clip.shape[0], tile_1_transformed_clip.shape[1], 3), dtype=np.float32)
-        post_rgb[..., 0] = _normalise_channel_range(tile_1_transformed_clip, vmin_1_trans, vmax_1_trans)
-        post_rgb[..., 1] = _normalise_channel_range(tile_2_transformed_clip, vmin_2_trans, vmax_2_trans)
+        post_rgb = np.zeros(
+            (tile_1_transformed_clip.shape[0], tile_1_transformed_clip.shape[1], 3), dtype=np.float32)
+        post_rgb[..., 0] = _normalise_channel_range(
+            tile_1_transformed_clip, vmin_1_trans, vmax_1_trans)
+        post_rgb[..., 1] = _normalise_channel_range(
+            tile_2_transformed_clip, vmin_2_trans, vmax_2_trans)
 
         axes[0].imshow(pre_rgb, aspect="auto")
         axes[0].set_title("Pre-correction")
@@ -643,7 +662,8 @@ def _create_zoom_visualisation(
         axes[1].set_title("Post-correction")
         axes[1].axis("off")
 
-        fig.text(0.9, 0.08, "neuroglancer link", ha="right", color="blue", url=ng_link)
+        fig.text(0.9, 0.08, "neuroglancer link",
+                 ha="right", color="blue", url=ng_link)
 
         pdf_filename = (
             f"{channel_a.replace('CH_', '')}vs{channel_b.replace('CH_', '')}_{tile_token}"
@@ -700,6 +720,11 @@ def _process_channel_pair(
     tile_1_stack, tile_1_transformed = fetch_channel_stack(channel_a)
     tile_2_stack, tile_2_transformed = fetch_channel_stack(channel_b)
 
+    affine_a = affine_matrices[channel_a]
+    affine_b = affine_matrices[channel_b]
+    affine_a_for_plots = np.linalg.inv(affine_a)
+    affine_b_for_plots = np.linalg.inv(affine_b)
+
     peaks_per_plane: Dict[int, np.ndarray] = {}
 
     for plane_offset, plane_value in enumerate(planes):
@@ -732,8 +757,8 @@ def _process_channel_pair(
             create_distance_plots(
                 np.empty((0, 2)),
                 np.empty((0, 2)),
-                affine_matrices[channel_a],
-                affine_matrices[channel_b],
+                affine_a_for_plots,
+                affine_b_for_plots,
                 ax_hist,
                 ax_scatter,
                 title,
@@ -748,8 +773,10 @@ def _process_channel_pair(
             points_2[:, 0].astype(np.uint16), points_2[:, 1].astype(np.uint16)
         ]
 
-        points_1 = points_1[np.flip(np.argsort(intensities_1))[: settings.dot_num], :-1]
-        points_2 = points_2[np.flip(np.argsort(intensities_2))[: settings.dot_num], :-1]
+        points_1 = points_1[np.flip(np.argsort(intensities_1))[
+            : settings.dot_num], :-1]
+        points_2 = points_2[np.flip(np.argsort(intensities_2))[
+            : settings.dot_num], :-1]
 
         correspond_indices = match_descriptors(
             points_1,
@@ -762,8 +789,8 @@ def _process_channel_pair(
             create_distance_plots(
                 np.empty((0, 2)),
                 np.empty((0, 2)),
-                affine_matrices[channel_a],
-                affine_matrices[channel_b],
+                affine_a_for_plots,
+                affine_b_for_plots,
                 ax_hist,
                 ax_scatter,
                 title,
@@ -777,8 +804,8 @@ def _process_channel_pair(
         create_distance_plots(
             correspond_points_1,
             correspond_points_2,
-            affine_matrices[channel_a],
-            affine_matrices[channel_b],
+            affine_a_for_plots,
+            affine_b_for_plots,
             ax_hist,
             ax_scatter,
             title,
@@ -880,7 +907,8 @@ def generate_camera_alignment_qc(
 
     for dataset_path in datasets:
         dataset_name = dataset_path.name
-        LOGGER.info("Processing camera-alignment QC for dataset %s", dataset_name)
+        LOGGER.info(
+            "Processing camera-alignment QC for dataset %s", dataset_name)
 
         cc_json = dataset_path / "camera_aligned_neuroglancer.json"
         rc_json = dataset_path / "radially_corrected_neuroglancer.json"
@@ -905,8 +933,10 @@ def generate_camera_alignment_qc(
             for idx in range(len(channel_names) - 1)
         ]
 
-        cc_layers, rc_layers = _prepare_channel_layers(cc_data, rc_data, channel_names)
-        tilenames, affine_matrices = _extract_affine_metadata(cc_layers, channel_names)
+        cc_layers, rc_layers = _prepare_channel_layers(
+            cc_data, rc_data, channel_names)
+        tilenames, affine_matrices = _extract_affine_metadata(
+            cc_layers, channel_names)
         s3_json_base = _determine_s3_json_base(tilenames)
 
         output_dirs = _prepare_output_dirs(scratch_root, dataset_name)
@@ -922,8 +952,10 @@ def generate_camera_alignment_qc(
         )
 
         first_channel = channel_names[0]
-        example_tile = convert_s3_to_local(tilenames[first_channel][0], data_dir)
-        tile_shape = da.from_zarr(example_tile.as_posix(), settings.pyramid_level).shape[2:]
+        example_tile = convert_s3_to_local(
+            tilenames[first_channel][0], data_dir)
+        tile_shape = da.from_zarr(
+            example_tile.as_posix(), settings.pyramid_level).shape[2:]
         planes_array, tile_height, tile_width = _compute_planes(tile_shape)
         planes = planes_array.tolist()
 
@@ -946,7 +978,8 @@ def generate_camera_alignment_qc(
             len(channel_pairs),
         )
 
-        channel_cache: Dict[Tuple[str, int], Tuple[np.ndarray, np.ndarray]] = {}
+        channel_cache: Dict[Tuple[str, int],
+                            Tuple[np.ndarray, np.ndarray]] = {}
 
         for tile_row_index, tile_index in enumerate(tiles_to_process):
             for channel_pair in channel_pairs:
@@ -971,13 +1004,16 @@ def generate_camera_alignment_qc(
                 )
 
         if planes and tiles_to_process and channel_pairs:
-            fig_hist.suptitle("Distance Histograms - Camera Alignment QC", fontsize=16)
+            fig_hist.suptitle(
+                "Distance Histograms - Camera Alignment QC", fontsize=16)
             hist_path = output_dir / "distance_histograms.png"
             fig_hist.savefig(str(hist_path), dpi=300, bbox_inches="tight")
 
-            fig_scatter.suptitle("Distance Scatter Plots - Camera Alignment QC", fontsize=16)
+            fig_scatter.suptitle(
+                "Distance Scatter Plots - Camera Alignment QC", fontsize=16)
             scatter_path = output_dir / "distance_scatter.png"
-            fig_scatter.savefig(str(scatter_path), dpi=300, bbox_inches="tight")
+            fig_scatter.savefig(str(scatter_path), dpi=300,
+                                bbox_inches="tight")
 
         plt.close(fig_hist)
         plt.close(fig_scatter)
