@@ -222,8 +222,11 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
         if all_affs:
             # Calculate weighted average affine
             inliers = np.array(all_inliers)
-            weights = inliers / inliers.sum()
-            weighted_affine = np.append(np.array([aff*w for aff, w in zip(all_affs, weights)]).sum(0),[0,0,1]).reshape((3,3))
+            if inliers.sum() > 0: 
+                weights = inliers / inliers.sum()
+                weighted_affine = np.append(np.array([aff*w for aff, w in zip(all_affs, weights)]).sum(0),[0,0,1]).reshape((3,3))
+            else: 
+                weighted_affine = np.array(np.eye(3))
             finalM[c1] = weighted_affine
             
             # Calculate difference from average for each tile
