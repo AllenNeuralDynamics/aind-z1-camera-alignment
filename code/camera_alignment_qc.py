@@ -54,7 +54,8 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_DATA_DIR = Path("/data")
 DEFAULT_SCRATCH_ROOT = Path("/scratch")
 DEFAULT_RESULTS_ROOT = Path("/results")
-DEFAULT_TEMPLATE_PATH = Path("/data/camera_aligned_neuroglancer.json")
+DEFAULT_CAMERA_CORRECTION_ROOT = Path("/data/camera_correction")
+DEFAULT_RADIAL_CORRECTION_ROOT = Path("/data/radial_correction")
 AIND_S3_PREFIX = "s3://aind-open-data"
 
 
@@ -455,7 +456,7 @@ def create_distance_plots(
         ax_hist.set_xlabel("distance (pixels)")
         ax_hist.set_ylabel("number of points")
         ax_hist.set_title(title)
-nmjhhhhh 
+
         max_dist = float(np.max(np.hstack([distance_pre, distance_post])))
         ax_scatter.scatter(distance_post,distance_pre )
         ax_scatter.plot([0, max_dist], [0, max_dist], "k--", alpha=0.5)
@@ -887,7 +888,8 @@ def generate_camera_alignment_qc(
     *,
     data_dir: Path = DEFAULT_DATA_DIR,
     scratch_root: Path = DEFAULT_RESULTS_ROOT,
-    template_path: Path = DEFAULT_TEMPLATE_PATH,
+    camera_correction_root: Path = DEFAULT_CAMERA_CORRECTION_ROOT,
+    radial_correction_root: Path = DEFAULT_RADIAL_CORRECTION_ROOT,
     settings: Optional[QCSettings] = None,
 ) -> Dict[str, Path]:
     """Generate QC artefacts for one or more datasets.
@@ -901,8 +903,10 @@ def generate_camera_alignment_qc(
         Root directory containing dataset folders and neuroglancer JSON files.
     scratch_root:
         Destination for generated QC artefacts.
-    template_path:
-        Path to the neuroglancer layer template JSON file.
+    camera_correction_root:
+        Root directory containing per-dataset camera correction neuroglancer JSONs.
+    radial_correction_root:
+        Root directory containing per-dataset radial correction neuroglancer JSONs.
     settings:
         Optional QCSettings override.
 
@@ -919,7 +923,6 @@ def generate_camera_alignment_qc(
     if not datasets:
         raise FileNotFoundError("No datasets found for QC processing.")
 
-    template_data = load_json(template_path)
     results: Dict[str, Path] = {}
 
     for dataset_path in datasets:
@@ -927,8 +930,9 @@ def generate_camera_alignment_qc(
         LOGGER.info(
             "Processing camera-alignment QC for dataset %s", dataset_name)
 
-        cc_json = dataset_path / "camera_aligned_neuroglancer.json"
-        rc_json = dataset_path / "radially_corrected_neuroglancer.json"
+        template_path = camera_correction_root / dataset_name / "camera_aligned_neuroglancer.json"
+        cc_json = template_path
+        rc_json = radial_correction_root / dataset_name / "radially_corrected_neuroglancer.json"
 
         if not cc_json.exists() or not rc_json.exists():
             raise FileNotFoundError(
@@ -936,7 +940,8 @@ def generate_camera_alignment_qc(
                 f"{cc_json}, {rc_json}"
             )
 
-        cc_data = load_json(cc_json)
+        template_data = load_json(template_path)
+        cc_data = copy.deepcopy(template_data)
         rc_data = load_json(rc_json)
 
         channel_names = sorted(layer["name"] for layer in cc_data["layers"])
