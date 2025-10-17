@@ -209,6 +209,9 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
             
             if model_result[0] is not None:
                 aff, num_matches, num_inliers = model_result
+                if num_inliers is None or num_inliers<0:
+                    aff = np.eye(2,3)
+
                 all_affs.append(aff)
                 all_inliers.append(num_inliers)
                 
