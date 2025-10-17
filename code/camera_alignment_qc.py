@@ -456,7 +456,6 @@ def create_distance_plots(
         ax_hist.set_xlabel("distance (pixels)")
         ax_hist.set_ylabel("number of points")
         ax_hist.set_title(title)
-
         max_dist = float(np.max(np.hstack([distance_pre, distance_post])))
         ax_scatter.scatter(distance_post,distance_pre )
         ax_scatter.plot([0, max_dist], [0, max_dist], "k--", alpha=0.5)
@@ -596,12 +595,12 @@ def _create_zoom_visualisation(
         tile_2_transformed_clip = tile_2_transformed[plane_index,
                                                      y_slice, x_slice]
 
-        vmin_1, vmax_1 = np.percentile(tile_1_clip, [10, 99.99])
-        vmin_2, vmax_2 = np.percentile(tile_2_clip, [10, 99.99])
+        vmin_1, vmax_1 = np.percentile(tile_1_clip, [5, 99])
+        vmin_2, vmax_2 = np.percentile(tile_2_clip, [5, 99])
         vmin_1_trans, vmax_1_trans = np.percentile(
-            tile_1_transformed_clip, [10, 99.99])
+            tile_1_transformed_clip, [5, 99])
         vmin_2_trans, vmax_2_trans = np.percentile(
-            tile_2_transformed_clip, [10, 99.99])
+            tile_2_transformed_clip, [5, 99])
 
         base_json = load_json(pair_template_path)
         for layer in base_json["layers"]:

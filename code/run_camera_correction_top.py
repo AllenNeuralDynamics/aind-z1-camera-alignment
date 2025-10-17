@@ -101,7 +101,7 @@ def run_camera_alignment_qc_only() -> bool:
         logger.debug("QC failure details", exc_info=True)
         return False
 
-    logger.info(f"QC plots saved to: {qc_output_dir}")
+    logger.info(f"QC plots saved to: {results_root}")
     return True
 
 
