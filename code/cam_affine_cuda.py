@@ -7,7 +7,6 @@ from glob import glob
 import zarr
 from pathlib import Path
 from calc_affine import calc_affine, get_channel_wavelength_from_single_channel_digit
-from qc_results import make_and_save_qc_plots, make_comprehensive_qc_plots
 import logging
 from s3_writer import get_resolution_zyx, copy_file_to_s3
 from typing import List, Dict, Any
@@ -123,18 +122,6 @@ def run_camera_alignment_pipeline(args: Dict[str, Any]) -> None:
     # Save results
     _save_xml_results(updated_xml_path, updated_xml_path_forward, results_root, s3_bucket, name)
     
-    # Generate QC plots
-    LOGGER.info('*' * 50)
-    LOGGER.info(f'Making QC Figures now (Pipeline Mode)')
-    LOGGER.info('*' * 50)
-    try:
-        qc_output_dir = results_root + name + "/camera_alignment_qc/"
-        make_comprehensive_qc_plots(s3_path_rc, scratch_root, output_root=qc_output_dir)
-        LOGGER.info(f'QC plots saved to: {qc_output_dir}')
-    except Exception as e:
-        LOGGER.warning(f"QC plot generation failed in pipeline mode: {e}")
-        import traceback
-        traceback.print_exc()
 
 def run_camera_alignment_capsule(args: Dict[str, Any]) -> None:
     """
@@ -167,17 +154,6 @@ def run_camera_alignment_capsule(args: Dict[str, Any]) -> None:
         backup_name = f"/data/{name}/SPIM.ome.zarr/"
         _process_local_data(backup_name, data_folder, scratch_root, results_root, s3_bucket, name)
     
-    LOGGER.info('*' * 50)
-    LOGGER.info(f'Making QC Figures now (Pipeline Mode)')
-    LOGGER.info('*' * 50)
-    try:
-        qc_output_dir = results_root + name + "/camera_alignment_qc/"
-        make_comprehensive_qc_plots(s3_path_rc, scratch_root, output_root=qc_output_dir)
-        LOGGER.info(f'QC plots saved to: {qc_output_dir}')
-    except Exception as e:
-        LOGGER.warning(f"QC plot generation failed in pipeline mode: {e}")
-        import traceback
-        traceback.print_exc()
 
 def _process_local_data(
     data_path: str, 
