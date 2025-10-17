@@ -188,26 +188,11 @@ def _clamp_slice(center: int, half_width: int, upper_bound: int) -> slice:
     return slice(start, end)
 
 
-def _resolve_datasets(
-    dataset_names: Optional[Sequence[str]],
-    data_dir: Path,
-) -> List[Path]:
-    if dataset_names:
-        dataset_paths = [data_dir / name for name in dataset_names]
-    else:
-        dataset_paths = [
-            path
-            for path in data_dir.iterdir()
-            if path.is_dir() and (path / "camera_correction").exists()
-        ]
-    return [path for path in dataset_paths if path.exists()]
-
 def _get_dataset_name(): 
     data_folder = Path('/data/camera_correction')
     for path in data_folder.iterdir():
         if path.is_dir() and path.name.startswith("HCR"):
             return path.name 
-
 
 
 def _prepare_output_dirs(output_dir: Path, dataset_name: str) -> Tuple[Path, Path, Path, Path]:
