@@ -1,14 +1,16 @@
+import argparse
 import pathlib
 import logging
-from cam_affine_cuda import main as run_2d_camera_correction
 import os
+import sys
 from typing import List, Dict, Any
-import json
-import s3fs
-import glob
+
+from cam_affine_cuda import main as run_2d_camera_correction
+import camera_alignment_qc
 from utils import (
     load_data_description,
     list_zarr_tiles_from_s3,
+    get_project_name
 ) 
 
 # Set up logging
@@ -51,6 +53,10 @@ def process_zarr_datasets():
     logger.info(f"Processing dataset: {dataset_name}")
     logger.info(f"Found {len(zarr_tiles)} zarr tiles to process")
         
+    # Get project name to determine if we should skip alignment
+    project_name = get_project_name()
+    skip_alignment = (project_name == "PLACE")
+    
     # Set up arguments for the correction function
     args = {
         "dataset_name": dataset_name,
@@ -59,10 +65,15 @@ def process_zarr_datasets():
         "z_correct": False,  # Default to 2D correction
         "pipeline": True,  # Always use pipeline mode for S3 data
         "s3_zarr_path": s3_path,  # Pass S3 path for zarr tiles
+        "skip_alignment": skip_alignment,  # Skip alignment for PLACE projects
     }
     
-
-    # Run 2D camera correction
+    if skip_alignment:
+        logger.info(f"Skipping camera alignment for project: {project_name}")
+    else:
+        logger.info(f"Running camera alignment for project: {project_name}")
+        
+    # Run camera correction (will handle skipping internally)
     run_2d_camera_correction(args)
     
     # Record successful processing
@@ -77,9 +88,48 @@ def process_zarr_datasets():
 
 
 
-if __name__ == "__main__":
+def run_camera_alignment_qc_only() -> bool:
+    """Execute QC plot generation without running alignment."""
+    results_root = pathlib.Path("/results")
+    results_root.mkdir(parents=True, exist_ok=True)
+    logger.info("Generating camera alignment QC plots only (no alignment run).")
     try:
-        process_zarr_datasets()
-    except Exception as e:
-        logger.error(f"Error during execution: {str(e)}")
+        camera_alignment_qc.generate_camera_alignment_qc()
+
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"QC plot generation failed: {exc}")
+        logger.debug("QC failure details", exc_info=True)
+        return False
+
+    logger.info(f"QC plots saved to: {results_root}")
+    return True
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments for capsule execution."""
+    parser = argparse.ArgumentParser(description="Run camera alignment capsule targets")
+    parser.add_argument(
+        "target",
+        nargs="?",
+        default="camera_alignment",
+        choices=("camera_alignment", "camera_alignment_qc"),
+        help="Execution target: camera alignment pipeline or QC-only",
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    cli_args = parse_args()
+
+    try:
+        if cli_args.target == "camera_alignment_qc":
+            success = run_camera_alignment_qc_only()
+        else:
+            success = process_zarr_datasets()
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"Error during execution: {exc}")
+        logger.debug("Execution failure details", exc_info=True)
         raise
+
+    if not success:
+        sys.exit(1)

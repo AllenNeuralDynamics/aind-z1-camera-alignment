@@ -1,16 +1,298 @@
 import dask.array as da
 import numpy as np 
+import numpy.linalg
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from glob import glob
 import zarr
 from pathlib import Path
-from skimage.metrics import structural_similarity as ssim
-from skimage.registration import phase_cross_correlation
-from skimage import exposure
+import json
+import os
+from tqdm import tqdm
+from multiprocessing import cpu_count
+from s3_writer import get_resolution_zyx, copy_file_to_s3
+
+
+# Handle optional imports for QC functionality
+try:
+    from skimage.metrics import structural_similarity as ssim
+    from skimage.registration import phase_cross_correlation
+    from skimage import exposure
+    from skimage.feature import blob_dog, match_descriptors
+    from skimage import transform as tf
+    from scipy.ndimage import gaussian_filter
+    from scipy.ndimage import gaussian_filter
+    from skimage.feature import peak_local_max
+    from matplotlib.backends.backend_pdf import PdfPages
+    from PyPDF2 import PdfMerger
+    ADVANCED_QC_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Advanced QC features not available. Missing packages: {e}")
+    ADVANCED_QC_AVAILABLE = False
+
+try:
+    from PyPDF2 import PdfMerger
+except ImportError:
+    try:
+        from PyPDF2 import PdfFileMerger as PdfMerger
+    except ImportError:
+        print("Warning: PDF merging not available. Install PyPDF2 for full functionality.")
+        PdfMerger = None
 
 from calc_affine import get_list_of_channels, get_channel_wavelength_from_single_channel_digit, make_pairs_of_channels
 
+# QC Constants and Configuration
+QC_CONFIG = {
+    'dot_num': 10000,
+    'dot_threshold': 10,
+    'top_n_points': 4,
+    'n_bins': 50,
+    'width': 30,
+    'tiles_to_check': np.arange(0, 8, 2),  # Check tiles 0, 2, 4, 6
+    'pyramid_level': '0'
+}
 
+def get_top_points(image, dot_num=10000, dot_threshold=10):
+    """
+    Detect blobs in image using Difference of Gaussians (DoG).
+    Sort them by intensity and return coordinates of the top intensity blobs.
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        2D image array for blob detection
+    dot_num : int, default=10000
+        Maximum number of points to return
+    dot_threshold : float, default=10
+        Threshold for blob detection
+        
+    Returns
+    -------
+    np.ndarray
+        Array of (y, x) coordinates of top intensity blobs
+    """
+    if not ADVANCED_QC_AVAILABLE:
+        print("Advanced QC features not available. Please install required packages.")
+        return np.array([])
+        
+    try:
+        blobs = blob_dog(
+            image.T.astype(np.float32), 
+            min_sigma=1, 
+            max_sigma=1,  # Changed from 1.5 to int 
+            threshold=dot_threshold
+        )
+        if len(blobs) == 0:
+            return np.array([])
+            
+        intensities = image.T[blobs[:, 0].astype(np.uint16), blobs[:, 1].astype(np.uint16)]
+        return blobs[np.flip(np.argsort(intensities))[:dot_num], :-1]
+    except Exception as e:
+        print(f"Error in blob detection: {e}")
+        return np.array([])
+
+def merge_pdfs(pdf_paths, output_path):
+    """
+    Merge multiple PDF files into a single PDF.
+    
+    Parameters
+    ----------
+    pdf_paths : list[str]
+        List of paths to PDF files to merge
+    output_path : str
+        Path for the merged output PDF
+    """
+    if PdfMerger is None:
+        print("PDF merging not available. Please install PyPDF2.")
+        return
+        
+    try:
+        merger = PdfMerger()
+        for pdf in pdf_paths:
+            if os.path.exists(pdf):
+                merger.append(pdf)
+        merger.write(output_path)
+        merger.close()
+        print(f"Merged {len(pdf_paths)} PDFs into {output_path}")
+    except Exception as e:
+        print(f"Error merging PDFs: {e}")
+
+def load_affine_transforms(affine_file_path):
+    """
+    Load affine transformation matrices from the updated.M.txt file.
+    
+    Parameters
+    ----------
+    affine_file_path : str
+        Path to the affine transforms file
+        
+    Returns
+    -------
+    dict
+        Dictionary mapping channel names to 3x3 affine transformation matrices
+    """
+    affine_dict = {}
+    
+    if not os.path.exists(affine_file_path):
+        print(f"Warning: Affine file not found at {affine_file_path}")
+        return affine_dict
+    
+    try:
+        with open(affine_file_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split('\t')
+                if len(parts) >= 7:  # channel + 6 affine parameters
+                    channel = parts[0]
+                    params = [float(x) for x in parts[1:7]]
+                    
+                    # Convert to 3x3 affine matrix
+                    # params are [A, B, dX, D, E, dY] for 2D affine transform
+                    affine_matrix = np.array([
+                        [params[0], params[1], params[2]],
+                        [params[3], params[4], params[5]],
+                        [0, 0, 1]
+                    ])
+                    affine_dict[channel] = affine_matrix
+                    
+    except Exception as e:
+        print(f"Error loading affine transforms: {e}")
+    
+    return affine_dict
+
+def apply_affine_to_image(image, affine_matrix):
+    """
+    Apply affine transformation to an image.
+    
+    Parameters
+    ----------
+    image : np.ndarray
+        2D image to transform
+    affine_matrix : np.ndarray
+        3x3 affine transformation matrix
+        
+    Returns
+    -------
+    np.ndarray
+        Transformed image
+    """
+    try:
+        # Extract 2x3 transformation matrix for skimage
+        transform_matrix = affine_matrix#[:2, :]
+        return tf.warp(image, transform_matrix, output_shape=image.shape)
+    except Exception as e:
+        print(f"Error applying affine transform: {e}")
+        return image
+
+def find_corresponding_points(points1, points2, max_distance=6, max_ratio=0.8):
+    """
+    Find corresponding points between two sets using feature matching.
+    
+    Parameters
+    ----------
+    points1 : np.ndarray
+        First set of points (N x 2)
+    points2 : np.ndarray
+        Second set of points (M x 2)
+    max_distance : float, default=6
+        Maximum distance for matching
+    max_ratio : float, default=0.8
+        Maximum ratio for matching
+        
+    Returns
+    -------
+    tuple
+        (corresponding_points1, corresponding_points2, match_indices)
+    """
+    if len(points1) == 0 or len(points2) == 0:
+        return np.array([]), np.array([]), np.array([])
+    
+    try:
+        match_indices = match_descriptors(
+            points1, points2, 
+            max_distance=max_distance, 
+            max_ratio=max_ratio
+        )
+        
+        if len(match_indices) == 0:
+            return np.array([]), np.array([]), np.array([])
+            
+        corresponding_points1 = points1[match_indices[:, 0], :]
+        corresponding_points2 = points2[match_indices[:, 1], :]
+        
+        return corresponding_points1, corresponding_points2, match_indices
+        
+    except Exception as e:
+        print(f"Error finding corresponding points: {e}")
+        return np.array([]), np.array([]), np.array([])
+
+def find_peak_regions(points1, points2, tile_shape, n_bins=50, top_n_points=4):
+    """
+    Find peak regions where point correspondences are concentrated.
+    
+    Parameters
+    ----------
+    points1, points2 : np.ndarray
+        Corresponding point sets
+    tile_shape : tuple
+        (height, width) of the tile
+    n_bins : int, default=50
+        Number of bins for histogram
+    top_n_points : int, default=4
+        Number of peak regions to return
+        
+    Returns
+    -------
+    np.ndarray
+        Peak region coordinates (x, y)
+    """
+    if len(points1) == 0 or len(points2) == 0:
+        return np.array([])
+    
+    if not ADVANCED_QC_AVAILABLE:
+        print("Advanced QC features not available for peak region analysis.")
+        return np.array([])
+    
+    try:
+        # Create 2D histogram of point distributions
+        points_hist_1 = gaussian_filter(
+            np.histogram2d(
+                points1[:, 0], points1[:, 1], 
+                bins=n_bins, 
+                range=[[0, tile_shape[0]], [0, tile_shape[1]]]
+            )[0], 
+            sigma=1
+        )
+        
+        points_hist_2 = gaussian_filter(
+            np.histogram2d(
+                points2[:, 0], points2[:, 1], 
+                bins=n_bins, 
+                range=[[0, tile_shape[0]], [0, tile_shape[1]]]
+            )[0], 
+            sigma=1
+        )
+        
+        # Find peaks in combined histogram
+        combined_hist = points_hist_1 + points_hist_2
+        
+        # Use a simple peak finding approach instead of peak_local_maxima
+        # Find top N points with highest values
+        flat_indices = np.argpartition(combined_hist.ravel(), -top_n_points)[-top_n_points:]
+        peak_coords = np.unravel_index(flat_indices, combined_hist.shape)
+        
+        # Convert bin indices to coordinates
+        x_locs = (np.linspace(0, tile_shape[1], n_bins + 1)[1:] + 
+                  np.linspace(0, tile_shape[1], n_bins + 1)[:-1]) // 2
+        y_locs = (np.linspace(0, tile_shape[0], n_bins + 1)[1:] + 
+                  np.linspace(0, tile_shape[0], n_bins + 1)[:-1]) // 2
+        
+        peaks = np.array([(x_locs[peak_coords[1][i]], y_locs[peak_coords[0][i]]) 
+                         for i in range(len(peak_coords[0]))])
+        return peaks
+        
+    except Exception as e:
+        print(f"Error finding peak regions: {e}")
+        return np.array([])
 
 def make_and_save_qc_plots(dataset_path, corrected_path):
     """
@@ -49,12 +331,14 @@ def make_and_save_qc_plots(dataset_path, corrected_path):
 
         #pairs_of_channels = [[488,515], [515, 561]...]
         #conver to channels = [[2,4], [4, 3], [3,1]]
-        pairs_of_channels = []
+        new_pairs_of_channels = []
         for c1, c2 in pairs_of_channels:
             #get index of list_of_wavelengths
-            c1_index = next((i for i, x in enumerate(list_of_channels) if x.value == c1), None)
-            c2_index = next((i for i, x in enumerate(list_of_channels) if x.value == c2), None)
-            pairs_of_channels.append([list_of_channels[c1_index], list_of_channels[c2_index]])
+            c1_index = next((i for i, x in enumerate(list_of_channels) if hasattr(x, 'value') and x.value == c1), None)
+            c2_index = next((i for i, x in enumerate(list_of_channels) if hasattr(x, 'value') and x.value == c2), None)
+            if c1_index is not None and c2_index is not None:
+                new_pairs_of_channels.append([list_of_channels[c1_index], list_of_channels[c2_index]])
+        pairs_of_channels = new_pairs_of_channels
     else:
     #remove 405 from list of channels 
         if '405' in list_of_channels:
@@ -161,10 +445,13 @@ def get_tiles_of_channel(dataset_path, channel):
     """
     Get list of zarr tile files for a specific channel.
     
+    Handles both local filesystem paths and S3 URIs. Also checks for neuroglancer
+    JSON files which may contain tile information organized by channel.
+    
     Parameters
     ----------
     dataset_path : str
-        Path to the dataset directory
+        Path to the dataset directory (local or S3 URI)
     channel : str
         Channel identifier to filter tiles by
         
@@ -173,7 +460,28 @@ def get_tiles_of_channel(dataset_path, channel):
     list[str]
         List of file paths to zarr tiles for the specified channel
     """
-    list_of_tiles = list(glob(f'{dataset_path}/*{channel}.zarr'))
+    # Import here to avoid circular dependency
+    from utils import list_zarr_tiles_from_s3
+    
+    # Check if it's an S3 path
+    if dataset_path.startswith('s3://'):
+        # First try to find neuroglancer JSON files in /data/
+        ng_json_files = find_neuroglancer_json_files('/data/')
+        if ng_json_files:
+            # Try to extract tile info from neuroglancer JSON
+            for json_file in ng_json_files:
+                ng_data = load_neuroglancer_json(json_file)
+                if ng_data:
+                    tile_info = extract_tile_info_from_neuroglancer(ng_data, dataset_path)
+                    if tile_info and channel in tile_info:
+                        return tile_info[channel]
+        
+        # Fallback: Get all tiles from S3 and filter by channel
+        all_tiles = list_zarr_tiles_from_s3(dataset_path)
+        list_of_tiles = [t for t in all_tiles if f'{channel}.zarr' in t]
+    else:
+        # Local filesystem
+        list_of_tiles = list(glob(f'{dataset_path}/*{channel}.zarr'))
 
     return list_of_tiles
 
@@ -181,17 +489,45 @@ def get_list_of_tiles(dataset_path):
     """
     Get list of all zarr tile files in a dataset directory.
     
+    Handles both local filesystem paths and S3 URIs. Also checks for neuroglancer
+    JSON files which may contain tile information.
+    
     Parameters
     ----------
     dataset_path : str
-        Path to the dataset directory
+        Path to the dataset directory (local or S3 URI)
         
     Returns
     -------
     list[str]
         List of file paths to all zarr tiles in the dataset
     """
-    list_of_tiles = list(glob(f'{dataset_path}/*.zarr'))
+    # Import here to avoid circular dependency
+    from utils import list_zarr_tiles_from_s3
+    
+    # First try to find neuroglancer JSON files in /data/ if dealing with S3 paths
+    if dataset_path.startswith('s3://'):
+        ng_json_files = find_neuroglancer_json_files('/data/')
+        if ng_json_files:
+            # Try to extract tile info from neuroglancer JSON
+            for json_file in ng_json_files:
+                ng_data = load_neuroglancer_json(json_file)
+                if ng_data:
+                    tile_info = extract_tile_info_from_neuroglancer(ng_data, dataset_path)
+                    if tile_info:
+                        # Flatten all tiles from all channels
+                        all_tiles = []
+                        for tiles in tile_info.values():
+                            all_tiles.extend(tiles)
+                        if all_tiles:
+                            return all_tiles
+        
+        # Fallback to S3 listing if neuroglancer approach didn't work
+        list_of_tiles = list_zarr_tiles_from_s3(dataset_path)
+    else:
+        # Local filesystem
+        list_of_tiles = list(glob(f'{dataset_path}/*.zarr'))
+    
     return list_of_tiles
 
 def load_raw_zarr_slice(zarr_path, z_index, level = '0'):
@@ -620,7 +956,7 @@ def plot_spots_on_image_zoomed(image, spots, zoom_factor=0.25, spot_size=20, spo
     plt.colorbar(im2, ax=ax2, label='Intensity')
     
     # Show the zoomed area on the full image
-    rect = plt.Rectangle((x_start, y_start), x_end-x_start, y_end-y_start, 
+    rect = Rectangle((x_start, y_start), x_end-x_start, y_end-y_start, 
                          fill=False, ec='yellow', lw=2)
     ax1.add_patch(rect)
     
@@ -698,7 +1034,7 @@ def plot_two_sets_of_spots_on_image_zoomed(image, spots1, spots2=None, zoom_fact
     plt.colorbar(im2, ax=ax2, label='Intensity')
     
     # Show the zoomed area on the full image
-    rect = plt.Rectangle((x_start, y_start), x_end-x_start, y_end-y_start, 
+    rect = Rectangle((x_start, y_start), x_end-x_start, y_end-y_start, 
                          fill=False, ec='yellow', lw=2)
     ax1.add_patch(rect)
     
@@ -706,8 +1042,947 @@ def plot_two_sets_of_spots_on_image_zoomed(image, spots1, spots2=None, zoom_fact
     #plt.show()
     plt.close()
 
+def create_distance_plots(points1, points2, affine1, affine2, ax_hist, ax_scatter, title):
+    """
+    Create distance comparison plots (histogram and scatter) for point correspondences.
+    
+    Parameters
+    ----------
+    points1, points2 : np.ndarray
+        Corresponding point sets
+    affine1, affine2 : np.ndarray
+        Affine transformation matrices
+    ax_hist, ax_scatter : matplotlib.axes.Axes
+        Axes for histogram and scatter plots
+    title : str
+        Plot title
+    """
+    if len(points1) == 0 or len(points2) == 0:
+        ax_hist.set_xticks([])
+        ax_hist.set_yticks([])
+        ax_scatter.set_xticks([])
+        ax_scatter.set_yticks([])
+        return
+    
+    try:
+        # Transform points using affine matrices
+        homogeneous_points1 = np.vstack([points1.T, np.ones(points1.shape[0])])
+        transformed_points1 = (affine1 @ homogeneous_points1)[:2, :].T.astype(int)
+        
+        homogeneous_points2 = np.vstack([points2.T, np.ones(points2.shape[0])])
+        transformed_points2 = (affine2 @ homogeneous_points2)[:2, :].T.astype(int)
+        
+        # Calculate distances
+        distance_pre = numpy.linalg.norm(points1 - points2, axis=1)
+        distance_post = numpy.linalg.norm(transformed_points1 - transformed_points2, axis=1)
+        
+        # Create histogram
+        ax_hist.hist(distance_pre, 10, alpha=0.5, label='pre-correction', color='r')
+        ax_hist.hist(distance_post, 10, alpha=0.5, label='post-correction', color='g')
+        ax_hist.legend()
+        ax_hist.set_xlabel('distance (pixels)', fontsize=14)
+        ax_hist.set_ylabel('number of points', fontsize=14)
+        ax_hist.set_title(title, fontsize=12)
+        
+        # Create scatter plot
+        max_dist = np.max(np.hstack([distance_pre, distance_post]))
+        ax_scatter.scatter(distance_pre, distance_post)
+        ax_scatter.plot([0, max_dist], [0, max_dist], 'k--', alpha=0.5)
+        ax_scatter.set_xlabel('distance pre-correction (pixels)', fontsize=12)
+        ax_scatter.set_ylabel('distance post-correction (pixels)', fontsize=12)
+        ax_scatter.set_title(title, fontsize=12)
+        
+    except Exception as e:
+        print(f"Error creating distance plots: {e}")
+
+
+#################################################################################################################################
+def convert_matrix_3x4_to_5x6(matrix_3x4: np.ndarray) -> np.ndarray:
+    """
+    Converts classic 3x4 homogeneous coordinates: (x y z T)
+    to neuroglancer 5x6 coordinates (t c z y x T)
+    
+    Parameters
+    ----------
+    matrix_3x4: np.ndarray
+        3x4 affine transformation matrix
+        
+    Returns
+    -------
+    np.ndarray:
+        5x6 neuroglancer transformation matrix
+    """
+    # Initialize 5x6 matrix with identity
+    matrix_5x6 = np.zeros((5, 6), np.float32)
+    np.fill_diagonal(matrix_5x6, 1)
+    
+    # Swap Rows 0 and 2; Swap Columns 0 and 2
+    patch = np.copy(matrix_3x4)
+    patch[[0, 2], :] = patch[[2, 0], :]
+    patch[:, [0, 2]] = patch[:, [2, 0]]
+    
+    # Place patch in bottom-right corner
+    matrix_5x6[2:5, 2:6] = patch
+    
+    return matrix_5x6
+
+def convert_affine_3x3_to_neuroglancer_5x6(affine_3x3: np.ndarray, z_position: int = 0) -> np.ndarray:
+    """
+    Convert a 3x3 2D affine matrix to neuroglancer 5x6 format.
+    
+    Parameters
+    ----------
+    affine_3x3 : np.ndarray
+        3x3 affine transformation matrix for 2D
+    z_position : int
+        Z position for the slice
+        
+    Returns
+    -------
+    np.ndarray
+        5x6 neuroglancer transformation matrix
+    """
+    # Create 3x4 matrix from 3x3 (add z dimension)
+    matrix_3x4 = np.zeros((3, 4), dtype=np.float32)
+    
+    # Copy 2D affine to x,y dimensions
+    matrix_3x4[0, 0] = affine_3x3[0, 0]  # x->x
+    matrix_3x4[0, 1] = affine_3x3[0, 1]  # y->x
+    matrix_3x4[0, 3] = affine_3x3[0, 2]  # translation x
+    
+    matrix_3x4[1, 0] = affine_3x3[1, 0]  # x->y
+    matrix_3x4[1, 1] = affine_3x3[1, 1]  # y->y
+    matrix_3x4[1, 3] = affine_3x3[1, 2]  # translation y
+    
+    # Z dimension (identity)
+    matrix_3x4[2, 2] = 1.0
+    matrix_3x4[2, 3] = z_position
+    
+    # Convert to neuroglancer format
+    return convert_matrix_3x4_to_5x6(matrix_3x4)
+
+def create_neuroglancer_json_with_camera_correction(
+    c1, c2, x_loc, y_loc, z_loc,
+    vmin_1_raw, vmax_1_raw, vmin_2_raw, vmax_2_raw,
+    vmin_1_corrected, vmax_1_corrected, vmin_2_corrected, vmax_2_corrected,
+    tilename_1, tilename_2,
+    affine_1, affine_2,
+    output_path,corrected_data_path=None, s3_base_path=None):
+    """
+    Create a neuroglancer JSON file with both camera-corrected and uncorrected views.
+    
+    Parameters
+    ----------
+    c1, c2 : str
+        Channel identifiers (e.g., "488", "561")
+    x_loc, y_loc, z_loc : int
+        Position coordinates for the view
+    vmin_1_raw, vmax_1_raw, vmin_2_raw, vmax_2_raw : float
+        Intensity ranges for raw/uncorrected data
+    vmin_1_corrected, vmax_1_corrected, vmin_2_corrected, vmax_2_corrected : float
+        Intensity ranges for corrected data
+    tilename_1, tilename_2 : str
+        Tile file paths for the two channels
+    affine_1, affine_2 : np.ndarray
+        3x3 affine transformation matrices for camera correction
+    output_path : str
+        Path to save the JSON file
+    s3_base_path : str, optional
+        S3 base path for the dataset
+        
+    Returns
+    -------
+    str
+        Neuroglancer URL for viewing the data
+    """
+    # Create the JSON structure
+    json_data = {
+        "dimensions": {
+            "x": [1e-9, "m"],
+            "y": [1e-9, "m"],
+            "z": [1e-9, "m"],
+            "c'": [1, ""],
+            "t": [1, ""]
+        },
+        "position": [x_loc, y_loc, z_loc, 0],
+        "crossSectionScale": 0.2,
+        "projectionScale": 80,
+        "layers": []
+    }
+    
+    def get_s3_path(tile_path):
+        """Convert local path to S3 path if needed."""
+        if tile_path.startswith('s3://'):
+            return tile_path
+        elif s3_base_path:
+            tile_filename = os.path.basename(tile_path)
+            base = s3_base_path.rstrip('/')
+            if '/image_radial_correction' not in base:
+                base = f"{base}/image_radial_correction"
+            return f"{base}/{tile_filename}"
+        else:
+            return tile_path
+    
+    def create_layer(channel_name, channel_id, tile_path, color_shader, 
+                    vmin, vmax, transform_matrix, visible=True):
+        """Create a neuroglancer layer with proper transformation."""
+        s3_tile_path = get_s3_path(tile_path)
+        
+        # Convert transform matrix to list format for JSON
+        matrix_list = transform_matrix.flatten('F').tolist()  # Flatten in column-major order
+        
+        layer = {
+            "type": "image",
+            "source": [
+                {
+                    "url": f"zarr://{s3_tile_path}",
+                    "transform": {
+                        "matrix": matrix_list,
+                        "outputDimensions": {
+                            "x": [1e-9, "m"],
+                            "y": [1e-9, "m"],
+                            "z": [1e-9, "m"],
+                            "c^": [1, ""],
+                            "t^": [1, ""]
+                        }
+                    }
+                }
+            ],
+            "tab": "source",
+            "name": channel_name,
+            "visible": visible,
+            "shader": color_shader,
+            "shaderControls": {
+                "normalized": {
+                    "range": [vmin, vmax]
+                }
+            }
+        }
+        return layer
+    
+    # Define shaders
+    red_shader = "#uicontrol vec3 color color(default=\"#ff0000\")\n#uicontrol invlerp normalized\nvoid main() {\nemitRGB(color * normalized());\n}"
+    green_shader = "#uicontrol vec3 color color(default=\"#00ff00\")\n#uicontrol invlerp normalized\nvoid main() {\nemitRGB(color * normalized());\n}"
+    
+    # Create identity matrix for uncorrected views
+    identity_3x3 = np.eye(3, dtype=np.float32)
+    identity_5x6 = convert_affine_3x3_to_neuroglancer_5x6(identity_3x3, z_loc)
+    
+    # Convert affine matrices to neuroglancer format
+    affine_1_5x6 = convert_affine_3x3_to_neuroglancer_5x6(affine_1, z_loc)
+    affine_2_5x6 = convert_affine_3x3_to_neuroglancer_5x6(affine_2, z_loc)
+    
+    # Add camera-corrected layers (visible by default)
+    json_data["layers"].append(
+        create_layer(
+            f"CH_{c1}_cc",  # Camera corrected
+            c1,
+            tilename_1,
+            red_shader,
+            vmin_1_corrected,
+            vmax_1_corrected,
+            affine_1_5x6,
+            visible=True
+        )
+    )
+    
+    json_data["layers"].append(
+        create_layer(
+            f"CH_{c2}_cc",  # Camera corrected
+            c2,
+            tilename_2,
+            green_shader,
+            vmin_2_corrected,
+            vmax_2_corrected,
+            affine_2_5x6,
+            visible=True
+        )
+    )
+    
+    # Add uncorrected/radially-corrected-only layers (hidden by default)
+    json_data["layers"].append(
+        create_layer(
+            f"CH_{c1}_rc",  # Radially corrected only (uncorrected for camera)
+            c1,
+            tilename_1,
+            red_shader,
+            vmin_1_raw,
+            vmax_1_raw,
+            identity_5x6,
+            visible=False
+        )
+    )
+    
+    json_data["layers"].append(
+        create_layer(
+            f"CH_{c2}_rc",  # Radially corrected only (uncorrected for camera)
+            c2,
+            tilename_2,
+            green_shader,
+            vmin_2_raw,
+            vmax_2_raw,
+            identity_5x6,
+            visible=False
+        )
+    )
+    
+    # Save the JSON file
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w') as f:
+        json.dump(json_data, f, indent=2)
+    
+    # Generate neuroglancer URL
+    json_filename = os.path.basename(output_path)
+    
+    # Extract S3 path components for URL generation
+    if s3_base_path:
+        # Parse the S3 path to get the dataset location
+        s3_parts = s3_base_path.replace('s3://', '').split('/')
+        if len(s3_parts) >= 2:
+            bucket = s3_parts[0]
+            dataset_path = s3_parts[1]
+            ng_url = f"https://neuroglancer-demo.appspot.com/#!s3://{bucket}/{dataset_path}/image_cross_image_alignment/{json_filename}"
+        else:
+            ng_url = f"https://neuroglancer-demo.appspot.com/#!{s3_base_path}/image_cross_image_alignment/{json_filename}"
+    elif corrected_data_path and corrected_data_path.startswith('s3://'):
+        # Parse from corrected_data_path
+        base_url = corrected_data_path.rstrip('/').replace('/image_radial_correction', '')
+        ng_url = f"https://neuroglancer-demo.appspot.com/#!{base_url}/image_cross_image_alignment/{json_filename}"
+    else:
+        # Fallback URL
+        ng_url = f"https://neuroglancer-demo.appspot.com/#!s3://aind-open-data/dataset/image_cross_image_alignment/{json_filename}"
+    
+    return ng_url
+
+def add_neuroglancer_link_to_figure(fig, ng_url):
+    """
+    Add a neuroglancer link to a matplotlib figure.
+    
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        Figure to add the link to
+    ng_url : str
+        Neuroglancer URL
+    """
+    if ng_url:
+        # Add clickable text to the figure
+        fig.text(0.9, 0.08, 'neuroglancer link', 
+                ha='right',
+                color='blue', 
+                url=ng_url,
+                fontsize=10)
+
+def upload_neuroglancer_jsons_to_s3(output_dir_json, dataset_path):
+    """
+    Upload all neuroglancer JSON files to S3.
+    
+    Parameters
+    ----------
+    output_dir_json : str
+        Local directory containing JSON files
+    dataset_path : str
+        Dataset path (used to determine S3 location)
+    """
+    # dataset_name = extract_dataset_name_from_path(dataset_path)
+    s3_base = dataset_path.rstrip("/image_radial_correction")+"/image_cross_image_alignment/"
+    
+    json_files = [f for f in os.listdir(output_dir_json) if f.endswith('.json')]
+    
+    print(f"Uploading {len(json_files)} neuroglancer JSON files to S3...")
+    
+    for json_file in json_files:
+        local_path = os.path.join(output_dir_json, json_file)
+        s3_path = s3_base + json_file
+        copy_file_to_s3(local_path, s3_path)
+    
+    print(f"Completed uploading neuroglancer JSON files to {s3_base}")
+
+def create_comparison_subplot_with_neuroglancer(tile1_clip, tile2_clip, tile1_transformed_clip, tile2_transformed_clip, 
+                            width, c1, c2, x_loc, y_loc, z_loc, tilename_1, tilename_2,
+                            affine_1, affine_2,
+                            output_dir_png, output_dir_pdf, output_dir_json, corrected_path):
+    """
+    Create before/after comparison subplot with neuroglancer JSON generation.
+    
+    Parameters
+    ----------
+    tile1_clip, tile2_clip : np.ndarray
+        Clipped regions from original tiles
+    tile1_transformed_clip, tile2_transformed_clip : np.ndarray
+        Clipped regions from transformed tiles
+    width : int
+        Width of the clipped region
+    c1, c2 : str
+        Channel names
+    x_loc, y_loc, z_loc : int
+        Location coordinates
+    tilename_1, tilename_2 : str
+        Tile file paths
+    affine_1, affine_2 : np.ndarray
+        3x3 affine transformation matrices for camera correction
+    output_dir_png, output_dir_pdf, output_dir_json : str
+        Output directories for PNG, PDF, and JSON files
+    corrected_path : str
+        Path to corrected dataset (for S3 URL generation)
+    """
+    try:
+        fig = plt.figure(figsize=(10, 5))
+        gs = fig.add_gridspec(1, 2, wspace=0.1, hspace=0.1)
+        
+        # Calculate intensity ranges for raw/uncorrected
+        vmin_1_raw = int(np.percentile(tile1_clip, 10))
+        vmax_1_raw = int(np.percentile(tile1_clip, 99.99))
+        vmin_2_raw = int(np.percentile(tile2_clip, 10))
+        vmax_2_raw = int(np.percentile(tile2_clip, 99.99))
+        
+        # Pre-correction subplot
+        ax = fig.add_subplot(gs[0])
+        img = np.zeros((tile1_clip.shape[0], tile1_clip.shape[1], 3), dtype=np.float32)
+        img[:, :, 0] = np.clip((tile1_clip.astype(np.float32) - vmin_1_raw) / (vmax_1_raw - vmin_1_raw), 0, 1)
+        img[:, :, 1] = np.clip((tile2_clip.astype(np.float32) - vmin_2_raw) / (vmax_2_raw - vmin_2_raw), 0, 1)
+        ax.imshow(img, aspect='auto')
+        ax.text(0, 0, 'Pre-correction', color='w', fontsize=20, 
+                horizontalalignment='left', verticalalignment='top')
+        ax.axis('off')
+        
+        # Calculate intensity ranges for corrected
+        vmin_1_corrected = np.percentile(tile1_transformed_clip, 10)
+        vmax_1_corrected = np.percentile(tile1_transformed_clip, 99.99)
+        vmin_2_corrected = np.percentile(tile2_transformed_clip, 10)
+        vmax_2_corrected = np.percentile(tile2_transformed_clip, 99.99)
+        
+        # Post-correction subplot
+        ax = fig.add_subplot(gs[1])
+        img = np.zeros((tile1_transformed_clip.shape[0], tile1_transformed_clip.shape[1], 3), dtype=np.float32)
+        img[:, :, 0] = np.clip((tile1_transformed_clip.astype(np.float32) - vmin_1_corrected) / (vmax_1_corrected - vmin_1_corrected), 0, 1)
+        img[:, :, 1] = np.clip((tile2_transformed_clip.astype(np.float32) - vmin_2_corrected) / (vmax_2_corrected - vmin_2_corrected), 0, 1)
+        ax.imshow(img, aspect='auto')
+        ax.text(0, 0, 'Post-correction', color='w', fontsize=20, 
+                horizontalalignment='left', verticalalignment='top')
+        ax.axis('off')
+        
+        # Extract tile identifier
+        tile_id = '_'.join(os.path.basename(tilename_1).split('_')[1:5]).replace('_Y', '-Y').replace('_0', '')
+        
+        # Create neuroglancer JSON with both corrected and uncorrected views
+        json_filename = f"cc_ng_{c1.replace('CH_', '')}_{c2.replace('CH_', '')}_{os.path.basename(tilename_1)[:18]}_x{x_loc}_y{y_loc}_z{z_loc}_zoomed.json"
+        json_path = os.path.join(output_dir_json, json_filename)
+        
+        # Use the enhanced function with camera correction support
+        ng_url = create_neuroglancer_json_with_camera_correction(
+            c1.replace('CH_', ''), c2.replace('CH_', ''),  # Remove CH_ prefix if present
+            x_loc, y_loc, z_loc,
+            vmin_1_raw, vmax_1_raw, vmin_2_raw, vmax_2_raw,  # Raw intensity ranges
+            vmin_1_corrected, vmax_1_corrected, vmin_2_corrected, vmax_2_corrected,  # Corrected ranges
+            tilename_1, tilename_2,
+            affine_1, affine_2,  # Pass the affine matrices
+            json_path,
+            s3_base_path=corrected_path
+        )
+        
+        # Add neuroglancer link to figure
+        add_neuroglancer_link_to_figure(fig, ng_url)
+        
+        # Title
+        plt.suptitle(f'{c1.replace("CH_", "")} vs. {c2.replace("CH_", "")}, tile = {tile_id} - x={x_loc}, y={y_loc}, z={z_loc}', 
+                    y=0.95, fontsize=18)
+        
+        # Save PNG
+        png_filename = f"{c1.replace('CH_', '')}vs{c2.replace('CH_', '')}_{os.path.basename(tilename_1)[:18]}_x{x_loc}_y{y_loc}_z{z_loc}.png"
+        fig.savefig(os.path.join(output_dir_png, png_filename), dpi=200, bbox_inches='tight')
+        
+        # Save PDF
+        pdf_filename = f"{c1.replace('CH_', '')}vs{c2.replace('CH_', '')}_{os.path.basename(tilename_1)[:18]}_x{x_loc}_y{y_loc}_z{z_loc}.pdf"
+        with PdfPages(os.path.join(output_dir_pdf, pdf_filename)) as pdf:
+            pdf.savefig(fig, bbox_inches='tight')
+        
+        plt.close()
+        
+    except Exception as e:
+        print(f"Error creating comparison subplot: {e}")
+
+
+def make_comprehensive_qc_plots_with_neuroglancer(data_path, scratch_root, corrected_path=None, 
+                                                  output_root="/results/comprehensive_qc",
+                                                  upload_to_s3_flag=True):
+    """
+    Create comprehensive QC plots with neuroglancer JSON generation and S3 upload.
+    
+    This is an enhanced version of make_comprehensive_qc_plots that includes
+    neuroglancer JSON generation and optional S3 upload.
+    
+    Parameters
+    ----------
+    data_path : str
+        Path to the original dataset directory
+    scratch_root : str
+        Path to scratch directory containing affine transforms
+    corrected_path : str, optional
+        Path to the corrected dataset (used for S3 URL generation)
+    output_root : str, default="/results/comprehensive_qc"
+        Root directory for QC output files
+    upload_to_s3_flag : bool, default=True
+        Whether to upload neuroglancer JSON files to S3
+        
+    Returns
+    -------
+    None
+        QC plots, reports, and neuroglancer JSONs are saved to disk (and optionally S3)
+    """
+    try:
+        # Use corrected_path if provided, otherwise use data_path
+        if corrected_path is None:
+            corrected_path = data_path
+            
+        # Create output directories
+        output_dir = output_root
+        output_dir_png = os.path.join(output_dir, "png_files")
+        output_dir_pdf = os.path.join(output_dir, "pdf_files")
+        output_dir_json = os.path.join(output_dir, "json_files")
+        
+        for dir_path in [output_dir, output_dir_png, output_dir_pdf, output_dir_json]:
+            os.makedirs(dir_path, exist_ok=True)
+        
+        # Load affine transforms
+        affine_file = os.path.join(scratch_root, 'updated.M.txt')
+        affine_transforms = load_affine_transforms(affine_file)
+        
+        if not affine_transforms:
+            print(f"No affine transforms found in {affine_file}")
+            return
+        
+        # Get channel information
+        channels = list(affine_transforms.keys())
+        if '405' in channels:
+            channels.remove('405')  # Remove reference channel
+        
+        channel_pairs = [(channels[i], channels[i+1]) for i in range(len(channels)-1)]
+        
+        print(f"Processing {len(channel_pairs)} channel pairs: {channel_pairs}")
+        print(f"Found affine transforms for channels: {channels}")
+        
+        # Create master neuroglancer JSON for each channel pair
+        for c1, c2 in channel_pairs:
+            master_json_filename = f"cc_ng_{c1.replace('CH_', '')}_{c2.replace('CH_', '')}.json"
+            master_json_path = os.path.join(output_dir, master_json_filename)
+            
+            # Create a basic master JSON (you can enhance this as needed)
+            master_json_data = {
+                "dimensions": {
+                    "x": [1e-9, "m"],
+                    "y": [1e-9, "m"],
+                    "z": [1e-9, "m"],
+                    "c'": [1, ""],
+                    "t": [1, ""]
+                },
+                "layers": []
+            }
+            
+            with open(master_json_path, 'w') as f:
+                json.dump(master_json_data, f, indent=2)
+        
+        # Get tiles from one channel to determine structure
+        sample_tiles = get_tiles_of_channel(data_path, channels[0])
+        if not sample_tiles:
+            print(f"No tiles found for channel {channels[0]} in {data_path}")
+            return
+        
+        # Process subset of tiles for QC
+        tiles_to_check = QC_CONFIG['tiles_to_check']
+        tiles_to_process = min(len(sample_tiles), max(tiles_to_check) + 1)
+        tiles_to_check = tiles_to_check[tiles_to_check < tiles_to_process]
+        
+        print(f"Processing {len(tiles_to_check)} tiles: {tiles_to_check}")
+        
+        # Get tile dimensions
+        sample_tile_path = sample_tiles[0]
+        tile_zarr = da.from_zarr(sample_tile_path, QC_CONFIG['pyramid_level'])
+        tile_shape = tile_zarr.shape[2:]  # Assuming 5D zarr: (C, T, Z, Y, X)
+        
+        # Configure Z planes to sample
+        thickness = tile_shape[0] // 3
+        spacing = tile_shape[0] // 5
+        num_planes = int(np.ceil(thickness / spacing))
+        planes = np.arange((tile_shape[0] - thickness) // 2, (tile_shape[0] + thickness) // 2, spacing)
+        
+        print(f"Tile shape: {tile_shape}, Processing {len(planes)} Z planes: {planes}")
+        
+        # Create distance plot figures
+        fig_dist, axs_dist = plt.subplots(
+            num_planes * len(tiles_to_check), len(channel_pairs),
+            figsize=(5 * len(channel_pairs), 5 * len(tiles_to_check) * num_planes)
+        )
+        fig_dist_scatter, axs_dist_scatter = plt.subplots(
+            num_planes * len(tiles_to_check), len(channel_pairs),
+            figsize=(5 * len(channel_pairs), 5 * len(tiles_to_check) * num_planes)
+        )
+        
+        # Ensure axs are 2D arrays
+        if len(channel_pairs) == 1:
+            axs_dist = axs_dist.reshape(-1, 1)
+            axs_dist_scatter = axs_dist_scatter.reshape(-1, 1)
+        if num_planes * len(tiles_to_check) == 1:
+            axs_dist = axs_dist.reshape(1, -1)
+            axs_dist_scatter = axs_dist_scatter.reshape(1, -1)
+        
+        # Process each tile
+        for i_tile, tile_idx in enumerate(tiles_to_check):
+            print(f"Processing tile {tile_idx + 1}/{len(sample_tiles)}")
+            
+            # Process each channel pair
+            for i_pair, (c1, c2) in enumerate(channel_pairs):
+                print(f"  Processing pair {c1} vs {c2}")
+                
+                # Load tiles for both channels
+                tiles_c1 = get_tiles_of_channel(data_path, c1)
+                tiles_c2 = get_tiles_of_channel(data_path, c2)
+                
+                if tile_idx >= len(tiles_c1) or tile_idx >= len(tiles_c2):
+                    print(f"  Skipping - insufficient tiles for channels {c1}, {c2}")
+                    continue
+                
+                tilename_1 = tiles_c1[tile_idx]
+                tilename_2 = tiles_c2[tile_idx]
+                
+                # Load tile data
+                tile_1_zarr = da.from_zarr(tilename_1, QC_CONFIG['pyramid_level'])[0, 0, ...]
+                tile_2_zarr = da.from_zarr(tilename_2, QC_CONFIG['pyramid_level'])[0, 0, ...]
+                
+                tile_1 = tile_1_zarr[planes, ...].compute()
+                tile_2 = tile_2_zarr[planes, ...].compute()
+                
+                # Apply affine transforms
+                affine_1 = affine_transforms[c1]
+                affine_2 = affine_transforms[c2]
+                
+                tile_1_transformed = np.zeros_like(tile_1, dtype=np.float32)
+                tile_2_transformed = np.zeros_like(tile_2, dtype=np.float32)
+                
+                for i_plane, plane in enumerate(planes):
+                    tile_1_transformed[i_plane, ...] = apply_affine_to_image(tile_1[i_plane, ...], affine_1)
+                    tile_2_transformed[i_plane, ...] = apply_affine_to_image(tile_2[i_plane, ...], affine_2)
+                
+                # Process each Z plane
+                peaks = {}
+                for i_plane, plane in enumerate(planes):
+                    # Detect points
+                    points_1 = get_top_points(tile_1[i_plane, ...], QC_CONFIG['dot_num'], QC_CONFIG['dot_threshold'])
+                    points_2 = get_top_points(tile_2[i_plane, ...], QC_CONFIG['dot_num'], QC_CONFIG['dot_threshold'])
+                    
+                    # Find correspondences
+                    correspond_points_1, correspond_points_2, _ = find_corresponding_points(points_1, points_2)
+                    
+                    # Create distance plots
+                    ax_row = i_plane + num_planes * i_tile
+                    title = f'{c1.replace("CH_", "")} vs. {c2.replace("CH_", "")}, tile {tile_idx} - z={plane}'
+                    
+                    create_distance_plots(
+                        correspond_points_1, correspond_points_2, affine_1, affine_2,
+                        axs_dist[ax_row, i_pair], axs_dist_scatter[ax_row, i_pair], title
+                    )
+                    
+                    # Find peak regions for detailed analysis
+                    if len(correspond_points_1) > 0:
+                        peaks[plane] = find_peak_regions(
+                            correspond_points_1, correspond_points_2, tile_shape[1:],
+                            QC_CONFIG['n_bins'], QC_CONFIG['top_n_points']
+                        )
+                    else:
+                        peaks[plane] = np.array([])
+                
+                # Create detailed comparison plots for peak regions
+                for plane, peak_regions in peaks.items():
+                    i_plane = list(peaks.keys()).index(plane)
+                    
+                    for i_point in range(len(peak_regions)):
+                        x_loc = int(peak_regions[i_point, 0])
+                        y_loc = int(peak_regions[i_point, 1])
+                        z_loc = int(plane)
+                        
+                        # Extract regions around peak
+                        width = QC_CONFIG['width']
+                        y_start, y_end = max(0, y_loc - width), min(tile_shape[1], y_loc + width)
+                        x_start, x_end = max(0, x_loc - width), min(tile_shape[2], x_loc + width)
+                        
+                        tile_1_clip = tile_1[i_plane, y_start:y_end, x_start:x_end]
+                        tile_2_clip = tile_2[i_plane, y_start:y_end, x_start:x_end]
+                        tile_1_transformed_clip = tile_1_transformed[i_plane, y_start:y_end, x_start:x_end]
+                        tile_2_transformed_clip = tile_2_transformed[i_plane, y_start:y_end, x_start:x_end]
+                        
+                        # Create comparison subplot with neuroglancer JSON
+                        create_comparison_subplot_with_neuroglancer(
+                            tile_1_clip, tile_2_clip, tile_1_transformed_clip, tile_2_transformed_clip,
+                            width, c1, c2, x_loc, y_loc, z_loc, tilename_1, tilename_2,
+                            affine_1, affine_2,  # Pass the affine matrices
+                            output_dir_png, output_dir_pdf, output_dir_json, corrected_path
+                        )
+        
+        # Save distance plot figures
+        fig_dist.suptitle('Distance Histograms - Camera Alignment QC', fontsize=16)
+        fig_dist.savefig(os.path.join(output_dir, 'distance_histograms.png'), dpi=300, bbox_inches='tight')
+        plt.close(fig_dist)
+        
+        fig_dist_scatter.suptitle('Distance Scatter Plots - Camera Alignment QC', fontsize=16)
+        fig_dist_scatter.savefig(os.path.join(output_dir, 'distance_scatter.png'), dpi=300, bbox_inches='tight')
+        plt.close(fig_dist_scatter)
+        
+        # Merge PDFs for each channel pair
+        for c1, c2 in channel_pairs:
+            pdf_pattern = f"{c1.replace('CH_', '')}vs{c2.replace('CH_', '')}"
+            pdf_list = [
+                os.path.join(output_dir_pdf, f) for f in os.listdir(output_dir_pdf)
+                if f.endswith('.pdf') and pdf_pattern in f
+            ]
+            
+            if pdf_list:
+                merged_pdf_path = os.path.join(output_dir, f"{pdf_pattern}_merged.pdf")
+                merge_pdfs(pdf_list, merged_pdf_path)
+        
+        # Upload neuroglancer JSONs to S3 if requested
+        if upload_to_s3_flag:
+            # Pass the corrected_path directly as the S3 destination
+            upload_neuroglancer_jsons_to_s3(output_dir_json, corrected_path)
+        
+        print(f"QC analysis complete. Results saved to: {output_dir}")
+        
+    except Exception as e:
+        print(f"Error in comprehensive QC analysis: {e}")
+        import traceback
+        traceback.print_exc()
+
+def create_comparison_subplot(tile1_clip, tile2_clip, tile1_transformed_clip, tile2_transformed_clip, 
+                            width, c1, c2, x_loc, y_loc, z_loc, tilename, output_dir_png, output_dir_pdf):
+    """
+    Create before/after comparison subplot for a specific region.
+    
+    Parameters
+    ----------
+    tile1_clip, tile2_clip : np.ndarray
+        Clipped regions from original tiles
+    tile1_transformed_clip, tile2_transformed_clip : np.ndarray
+        Clipped regions from transformed tiles
+    width : int
+        Width of the clipped region
+    c1, c2 : str
+        Channel names
+    x_loc, y_loc, z_loc : int
+        Location coordinates
+    tilename : str
+        Tile identifier
+    output_dir_png, output_dir_pdf : str
+        Output directories for PNG and PDF files
+    """
+    try:
+        fig = plt.figure(figsize=(10, 5))
+        gs = fig.add_gridspec(1, 2, wspace=0.1, hspace=0.1)
+        
+        # Calculate intensity ranges
+        vmin_1 = int(np.percentile(tile1_clip, 10))
+        vmax_1 = int(np.percentile(tile1_clip, 99.99))
+        vmin_2 = int(np.percentile(tile2_clip, 10))
+        vmax_2 = int(np.percentile(tile2_clip, 99.99))
+        
+        # Pre-correction subplot
+        ax = fig.add_subplot(gs[0])
+        img = np.zeros((tile1_clip.shape[0], tile1_clip.shape[1], 3), dtype=np.float32)
+        img[:, :, 0] = np.clip((tile1_clip.astype(np.float32) - vmin_1) / (vmax_1 - vmin_1), 0, 1)
+        img[:, :, 1] = np.clip((tile2_clip.astype(np.float32) - vmin_2) / (vmax_2 - vmin_2), 0, 1)
+        ax.imshow(img, aspect='auto')
+        ax.text(0, 0, 'Pre-correction', color='w', fontsize=20, 
+                horizontalalignment='left', verticalalignment='top')
+        ax.axis('off')
+        
+        # Post-correction subplot
+        ax = fig.add_subplot(gs[1])
+        vmin_1_trans = np.percentile(tile1_transformed_clip, 10)
+        vmax_1_trans = np.percentile(tile1_transformed_clip, 99.99)
+        vmin_2_trans = np.percentile(tile2_transformed_clip, 10)
+        vmax_2_trans = np.percentile(tile2_transformed_clip, 99.99)
+        
+        img = np.zeros((tile1_transformed_clip.shape[0], tile1_transformed_clip.shape[1], 3), dtype=np.float32)
+        img[:, :, 0] = np.clip((tile1_transformed_clip.astype(np.float32) - vmin_1_trans) / (vmax_1_trans - vmin_1_trans), 0, 1)
+        img[:, :, 1] = np.clip((tile2_transformed_clip.astype(np.float32) - vmin_2_trans) / (vmax_2_trans - vmin_2_trans), 0, 1)
+        ax.imshow(img, aspect='auto')
+        ax.text(0, 0, 'Post-correction', color='w', fontsize=20, 
+                horizontalalignment='left', verticalalignment='top')
+        ax.axis('off')
+        
+        # Title and save
+        tile_id = '_'.join(tilename.split('/')[-1].split('_')[1:5]).replace('_Y', '-Y').replace('_0', '')
+        plt.suptitle(f'{c1.replace("CH_", "")} vs. {c2.replace("CH_", "")}, tile = {tile_id} - x={x_loc}, y={y_loc}, z={z_loc}', 
+                    y=0.95, fontsize=18)
+        
+        # Save PNG
+        png_filename = f"{c1.replace('CH_', '')}vs{c2.replace('CH_', '')}_{tilename.split('/')[-1][:18]}_x{x_loc}_y{y_loc}_z{z_loc}.png"
+        fig.savefig(os.path.join(output_dir_png, png_filename), dpi=200, bbox_inches='tight')
+        
+        # Save PDF
+        pdf_filename = f"{c1.replace('CH_', '')}vs{c2.replace('CH_', '')}_{tilename.split('/')[-1][:18]}_x{x_loc}_y{y_loc}_z{z_loc}.pdf"
+        with PdfPages(os.path.join(output_dir_pdf, pdf_filename)) as pdf:
+            pdf.savefig(fig, bbox_inches='tight')
+        
+        plt.close()
+        
+    except Exception as e:
+        print(f"Error creating comparison subplot: {e}")
+
+
+# If you want to keep using the original function name, you can replace it:
+def make_comprehensive_qc_plots(data_path, scratch_root, corrected_path=None, 
+                                output_root="/results/comprehensive_qc"):
+    """
+    Wrapper for backward compatibility - calls the new function with neuroglancer support.
+    """
+    
+    return make_comprehensive_qc_plots_with_neuroglancer(
+        data_path=data_path,
+        scratch_root=scratch_root,
+        corrected_path=corrected_path,
+        output_root=output_root,
+        upload_to_s3_flag=True
+    )
+
+def load_neuroglancer_json(json_path):
+    """
+    Load a neuroglancer JSON file.
+    
+    Parameters
+    ----------
+    json_path : str
+        Path to the neuroglancer JSON file
+        
+    Returns
+    -------
+    dict
+        Parsed JSON data
+    """
+    try:
+        with open(json_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading neuroglancer JSON from {json_path}: {e}")
+        return None
+
+def extract_channels_from_neuroglancer(neuroglancer_data):
+    """
+    Extract channel information from neuroglancer JSON data.
+    
+    Parameters
+    ----------
+    neuroglancer_data : dict
+        Parsed neuroglancer JSON data
+        
+    Returns
+    -------
+    list[str]
+        List of channel identifiers found in the data
+    """
+    channels = []
+    try:
+        if 'layers' in neuroglancer_data:
+            for layer in neuroglancer_data['layers']:
+                if 'name' in layer:
+                    # Extract channel from layer name (e.g., "488", "515", "561")
+                    layer_name = layer['name']
+                    channels.append(layer_name)
+        return channels
+    except Exception as e:
+        print(f"Error extracting channels from neuroglancer data: {e}")
+        return []
+
+def extract_tile_info_from_neuroglancer(neuroglancer_data, data_path):
+    """
+    Extract tile information from neuroglancer JSON data.
+    
+    Parameters
+    ----------
+    neuroglancer_data : dict
+        Parsed neuroglancer JSON data
+    data_path : str
+        Base path to the data (used to construct full tile paths)
+        
+    Returns
+    -------
+    dict
+        Dictionary mapping channel names to lists of tile paths
+    """
+    tile_info = {}
+    try:
+        if 'layers' in neuroglancer_data:
+            for layer in neuroglancer_data['layers']:
+                if 'name' in layer and 'source' in layer:
+                    channel = layer['name']
+                    channel = channel.lstrip('CH_')
+                    # Extract tile paths from source
+                    source = layer['source']
+                    if isinstance(source, str):
+                        # Handle single source
+                        if source.startswith('zarr://'):
+                            tile_path = source.replace('zarr://', '')
+                            # Construct full path
+                            if not tile_path.startswith('s3://') and not tile_path.startswith('/'):
+                                tile_path = os.path.join(data_path, tile_path)
+                            tile_info.setdefault(channel, []).append(tile_path)
+                    elif isinstance(source, list):
+                        # Handle source dictionary with url
+                        for src in source: 
+                            if isinstance(src, dict):
+                                if 'url' in src:
+                                    url = src['url']
+                                    if url.startswith('zarr://'):
+                                        tile_path = url.replace('zarr://', '')
+                                        if not tile_path.startswith('s3://') and not tile_path.startswith('/'):
+                                            tile_path = os.path.join(data_path, tile_path)
+                                        tile_info.setdefault(channel, []).append(tile_path)
+                                    elif url.startswith('s3://'):
+                                        tile_path = url
+                                        tile_info.setdefault(channel, []).append(tile_path)
+            return tile_info
+    except Exception as e:
+        print(f"Error extracting tile info from neuroglancer data: {e}")
+        return {}
+
+def find_neuroglancer_json_files(data_dir='/data/'):
+    """
+    Find neuroglancer JSON files in the data directory.
+    
+    Parameters
+    ----------
+    data_dir : str, default='/data/'
+        Directory to search for neuroglancer JSON files
+        
+    Returns
+    -------
+    list[str]
+        List of paths to neuroglancer JSON files
+    """
+    json_files = []
+    try:
+        # Look for JSON files that might be neuroglancer configs
+        # Common patterns: neuroglancer.json, ng.json, precomputed*.json, etc.
+        patterns = ['*ng.json', '*neuroglancer*.json']
+        
+        for pattern in patterns:
+            json_files.extend(glob(os.path.join(data_dir, pattern)))
+            # json_files.extend(glob(os.path.join(data_dir, '**', pattern), recursive=True)) #really slows things down
+        
+        # Remove duplicates
+        json_files = list(set(json_files))
+        
+        if json_files:
+            print(f"Found neuroglancer JSON files: {json_files}")
+        else:
+            print(f"No neuroglancer JSON files found in {data_dir}")
+            
+        return json_files
+    except Exception as e:
+        print(f"Error finding neuroglancer JSON files: {e}")
+        return []
+
 if __name__ == "__main__":
 
-    raw_dataset_path = '/root/capsule/data/HCR_BL6-001_2023-06-19_00-01-00/SPIM.ome.zarr/'
-    corrected_path = '/root/capsule/scratch/HCR_BL6-001_2023-06-19_00-01-00/affine.ome.zarr'
-    make_and_save_qc_plots(raw_dataset_path, corrected_path)
+    raw_dataset_path = '/root/capsule/data/HCR_000000-s43_2025-07-24_13-00-00_processed_2025-10-02_06-30-20/image_radial_correction'
+    corrected_path = 's3://aind-open-data/HCR_000000-s43_2025-07-24_13-00-00_processed_2025-10-02_06-30-20/image_radial_correction'
+    scratch_root = '/scratch'
+    make_comprehensive_qc_plots(corrected_path, scratch_root, output_root="/results/comprehensive_qc")
