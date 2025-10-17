@@ -198,9 +198,16 @@ def _resolve_datasets(
         dataset_paths = [
             path
             for path in data_dir.iterdir()
-            if path.is_dir() and (path / "image_radial_correction").exists()
+            if path.is_dir() and (path / "camera_correction").exists()
         ]
     return [path for path in dataset_paths if path.exists()]
+
+def _get_dataset_name(): 
+    data_folder = Path('/data/camera_correction')
+    for path in data_folder.iterdir():
+        if path.is_dir() and path.name.startswith("HCR"):
+            return path.name 
+
 
 
 def _prepare_output_dirs(output_dir: Path, dataset_name: str) -> Tuple[Path, Path, Path, Path]:
@@ -360,8 +367,7 @@ def _load_tile_stack(
     planes: Sequence[int],
     pyramid_level: str,
 ) -> np.ndarray:
-    local_path = convert_s3_to_local(tilename_s3, data_dir)
-    tile_zarr = da.from_zarr(local_path.as_posix(), pyramid_level)
+    tile_zarr = da.from_zarr(tilename_s3, pyramid_level)
     # Expecting shape (C, T, Z, Y, X); select first channel/time to mirror scientist code
     tile_stack = tile_zarr[0, 0, planes, ...].compute()
     return np.asarray(tile_stack)
@@ -610,7 +616,7 @@ def _create_zoom_visualisation(
                                    if s["url"] == target_url]
                 if layer["name"].endswith("_cc"):
                     _apply_intensity_scaling(
-                        layer, (vmin_1_trans, vmax_1_trans), True)
+                        layer, (vmin_1, vmax_1), True)
                 else:
                     _apply_intensity_scaling(layer, (vmin_1, vmax_1), False)
             elif layer["name"].startswith(channel_b):
@@ -619,7 +625,7 @@ def _create_zoom_visualisation(
                                    if s["url"] == target_url]
                 if layer["name"].endswith("_cc"):
                     _apply_intensity_scaling(
-                        layer, (vmin_2_trans, vmax_2_trans), True)
+                        layer, (vmin_2, vmax_2), True)
                 else:
                     _apply_intensity_scaling(layer, (vmin_2, vmax_2), False)
 
@@ -918,14 +924,14 @@ def generate_camera_alignment_qc(
     ensure_advanced_qc_available()
     settings = settings or QCSettings()
 
-    datasets = _resolve_datasets(dataset_names, data_dir)
-    if not datasets:
+    # datasets = _resolve_datasets(dataset_names, data_dir)
+    dataset_names = _get_dataset_name()
+    if not dataset_names:
         raise FileNotFoundError("No datasets found for QC processing.")
 
     results: Dict[str, Path] = {}
 
-    for dataset_path in datasets:
-        dataset_name = dataset_path.name
+    for dataset_name in [dataset_names]:
         LOGGER.info(
             "Processing camera-alignment QC for dataset %s", dataset_name)
 
@@ -973,10 +979,9 @@ def generate_camera_alignment_qc(
         )
 
         first_channel = channel_names[0]
-        example_tile = convert_s3_to_local(
-            tilenames[first_channel][0], data_dir)
+        example_tile = tilenames[first_channel][0]
         tile_shape = da.from_zarr(
-            example_tile.as_posix(), settings.pyramid_level).shape[2:]
+            example_tile, settings.pyramid_level).shape[2:]
         planes_array, tile_height, tile_width = _compute_planes(tile_shape)
         planes = planes_array.tolist()
 
