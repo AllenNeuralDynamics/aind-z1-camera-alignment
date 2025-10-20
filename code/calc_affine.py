@@ -207,7 +207,7 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
             # Find model for this tile
             # use plane with the highest number of inliers 
             # for i, _plane in enumerate(list(range((z-thickness)//2, (z+thickness)//2, spacing))):
-            #     model_result = find_model((points_c2[i], points_c1[i]))  # Using first plane for now
+            #     model_result = find_model((points_c2[i], points_c1[i]))  
 
             model_result = find_model((points_c2[0], points_c1[0]))  # Using first plane for now
             
