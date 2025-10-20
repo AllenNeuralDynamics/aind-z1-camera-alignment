@@ -20,7 +20,7 @@ from utils import (
 nodes = cpu_count()-1
 dot_num, dot_threshold, min_sample = 10000, 10, 5
 FRACTION_OF_DOTS_PER_PLANE_THRESHOLD = 0.4
-thickness, spacing = 20, 4
+thickness, spacing = 40, 4
 max_tiles = 20
 pyramid_level = '0'
 
@@ -205,10 +205,17 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
                 points_c2 = [apply_affine_transform_to_spots(p, np.linalg.inv(aff_to_apply)) for p in points_c2]
             
             # Find model for this tile
+            # use plane with the highest number of inliers 
+            # for i, _plane in enumerate(list(range((z-thickness)//2, (z+thickness)//2, spacing))):
+            #     model_result = find_model((points_c2[i], points_c1[i]))  # Using first plane for now
+
             model_result = find_model((points_c2[0], points_c1[0]))  # Using first plane for now
             
             if model_result[0] is not None:
                 aff, num_matches, num_inliers = model_result
+                if num_inliers is None or num_inliers==0:
+                    aff = np.eye(2,3)
+
                 all_affs.append(aff)
                 all_inliers.append(num_inliers)
                 
@@ -222,8 +229,11 @@ def calc_affine(root: str, results_root: str = '/scratch/', qc_root = '/results/
         if all_affs:
             # Calculate weighted average affine
             inliers = np.array(all_inliers)
-            weights = inliers / inliers.sum()
-            weighted_affine = np.append(np.array([aff*w for aff, w in zip(all_affs, weights)]).sum(0),[0,0,1]).reshape((3,3))
+            if inliers.sum() > 0: 
+                weights = inliers / inliers.sum()
+                weighted_affine = np.append(np.array([aff*w for aff, w in zip(all_affs, weights)]).sum(0),[0,0,1]).reshape((3,3))
+            else: 
+                weighted_affine = np.array(np.eye(3))
             finalM[c1] = weighted_affine
             
             # Calculate difference from average for each tile
@@ -860,7 +870,7 @@ def find_model(input):
 
     # print(f'shape of A {np.shape(A)} shape of B {np.shape(B)}')
     correspond = match_descriptors( A, B, max_distance=6, max_ratio=0.8 )
-    if type(correspond) == type(None) or len(correspond)<min_sample: return None, None, None
+    if type(correspond) == type(None) or len(correspond)<=min_sample: return None, None, None
     try:
         model, inliers = ransac((A[correspond[:,0]], B[correspond[:,1]]), AffineTransform, min_samples = min_sample,  residual_threshold=1, max_trials=5000)
         if model: return model.params[:-1], len(correspond), inliers.sum()
