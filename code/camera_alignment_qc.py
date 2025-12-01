@@ -941,7 +941,7 @@ def generate_camera_alignment_qc(
         if len(channel_names) < 2:
             # raise ValueError("QC generation requires at least two channels.")
             LOGGER.warning("QC generation requires at least two channels")
-            return None
+            return True
 
         channel_pairs = [
             (channel_names[idx], channel_names[idx + 1])
