@@ -925,6 +925,7 @@ def generate_camera_alignment_qc(
         rc_json = radial_correction_root / dataset_name / "radially_corrected_neuroglancer.json"
 
         if not cc_json.exists() or not rc_json.exists():
+            LOGGER.Warning(f"no file found for {dataset_name}")
             raise FileNotFoundError(
                 f"Required neuroglancer JSON files missing for {dataset_name}: "
                 f"{cc_json}, {rc_json}"
@@ -938,7 +939,9 @@ def generate_camera_alignment_qc(
         if "CH_405" in channel_names:
             channel_names.remove("CH_405")
         if len(channel_names) < 2:
-            raise ValueError("QC generation requires at least two channels.")
+            # raise ValueError("QC generation requires at least two channels.")
+            LOGGER.warning("QC generation requires at least two channels")
+            return None
 
         channel_pairs = [
             (channel_names[idx], channel_names[idx + 1])
