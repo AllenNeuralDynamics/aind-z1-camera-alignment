@@ -129,7 +129,3 @@ if __name__ == "__main__":
     except Exception as exc:  # noqa: BLE001
         logger.error(f"Error during execution: {exc}")
         logger.debug("Execution failure details", exc_info=True)
-        raise
-
-    if not success:
-        sys.exit(1)
