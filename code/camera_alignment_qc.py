@@ -940,8 +940,8 @@ def generate_camera_alignment_qc(
             channel_names.remove("CH_405")
         if len(channel_names) < 2:
             # raise ValueError("QC generation requires at least two channels.")
-            LOGGER.warning("QC generation requires at least two channels")
-            return True
+            LOGGER.Warning("QC generation requires at least two channels")
+            return
 
         channel_pairs = [
             (channel_names[idx], channel_names[idx + 1])
