@@ -96,9 +96,22 @@ def run_camera_alignment_qc_only() -> bool:
     try:
         results = camera_alignment_qc.generate_camera_alignment_qc()
 
+        if results == {}: 
+            status_file = results_root / "qc_status.txt"
+            with open(status_file, "w") as f:
+                f.write("Camera alignment QC was not generated.\n")
+                f.write("Reason: Less than 2 channels available after excluding CH_405.\n")
+                f.write("This is expected for datasets with only 1-2 channels.\n")
+            logger.warning("No QC results generated - insufficient channels")
+            return True  # Still return True - this is expected, not a failure
+
     except Exception as exc:  # noqa: BLE001
         logger.error(f"QC plot generation failed: {exc}")
         logger.debug("QC failure details", exc_info=True)
+        status_file = results_root / "qc_status.txt"
+        with open(status_file, "w") as f:
+            f.write("Camera alignment QC generation failed.\n")
+            f.write(f"Error: {exc}\n")
         return False
 
     logger.info(f"QC plots saved to: {results_root}")
