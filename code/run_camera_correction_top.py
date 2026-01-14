@@ -94,7 +94,7 @@ def run_camera_alignment_qc_only() -> bool:
     results_root.mkdir(parents=True, exist_ok=True)
     logger.info("Generating camera alignment QC plots only (no alignment run).")
     try:
-        camera_alignment_qc.generate_camera_alignment_qc()
+        results = camera_alignment_qc.generate_camera_alignment_qc()
 
     except Exception as exc:  # noqa: BLE001
         logger.error(f"QC plot generation failed: {exc}")
