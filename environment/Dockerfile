@@ -2,6 +2,12 @@
 ARG REGISTRY_HOST
 FROM $REGISTRY_HOST/codeocean/jupyterlab:3.6.1-miniconda4.12.0-python3.9-ubuntu20.04
 
+LABEL maintainer="Carson Berry <carson.berry@alleninstitute.org>" \
+      org.opencontainers.image.title="Z1 Camera Alignment" \
+      org.opencontainers.image.description="Z1 Camera Alignment" \
+      org.opencontainers.image.version="1.0.0" \
+      org.opencontainers.image.licenses="MIT"
+
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_ASKPASS
 COPY git-askpass /
