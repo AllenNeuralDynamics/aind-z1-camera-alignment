@@ -12,6 +12,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_ASKPASS
 COPY git-askpass /
 
+RUN python -m pip install --upgrade pip setuptools wheel
 RUN pip install -U --no-cache-dir \
     aind-data-schema==2.4.0 \
     codeocean==0.3.0 \
@@ -19,11 +20,11 @@ RUN pip install -U --no-cache-dir \
     hdf5plugin==5.1.0 \
     kerchunk==0.2.7 \
     matplotlib==3.9.2 \
-    numpy==1.24.4 \
+    numpy==1.26.4 \
     pypdf2==3.0.1 \
     pyyaml==6.0.1 \
     s3fs==2025.7.0 \
-    scikit-image==0.21.0 \
+    scikit-image==0.24.0 \
     scipy==1.13.1 \
     seaborn==0.13.2 \
     tifffile==2023.7.10 \
