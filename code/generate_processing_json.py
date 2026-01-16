@@ -162,8 +162,10 @@ def write_processing_json(processing: Processing, destination: Path) -> None:
     destination : Path
         Target file path; parent directories are created if missing.
     """
+    serialized = processing.model_dump_json(indent=2)
+    Processing.model_validate_json(serialized)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(processing.model_dump_json(indent=2))
+    destination.write_text(serialized)
 
 
 def generate_processing_json(
