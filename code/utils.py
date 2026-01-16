@@ -9,6 +9,8 @@ import logging
 import xmltodict
 from collections import OrderedDict
 import shutil
+from glob import glob
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
