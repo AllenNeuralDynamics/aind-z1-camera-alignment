@@ -16,7 +16,7 @@ RUN python -m pip install --upgrade pip setuptools wheel
 RUN pip install -U --no-cache-dir \
     aind-data-schema==2.4.0 \
     codeocean==0.3.0 \
-    dask==2023.7.1 \
+    dask==2025.12.0 \
     hdf5plugin==5.1.0 \
     kerchunk==0.2.7 \
     matplotlib==3.9.2 \
@@ -30,6 +30,4 @@ RUN pip install -U --no-cache-dir \
     seaborn==0.13.2 \
     tifffile==2023.7.10 \
     xmltodict==0.14.2 \
-    blosc==1.21.5 \
-    numcodecs==1.12.1 \
-    zarr==2.18.3
+    zarr
