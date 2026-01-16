@@ -75,7 +75,30 @@ class QCSettings:
 
 
 def apply_affine_to_image(image: np.ndarray, affine_matrix: np.ndarray) -> np.ndarray:
-    """Apply a 2D affine transform to an image plane."""
+    """
+    Apply a 2D affine transform to an image plane.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        Input image array to be transformed. Should be a 2D array representing
+        a single image plane.
+    affine_matrix : np.ndarray
+        2D affine transformation matrix to apply to the image. Should be a 
+        2x3 or 3x3 matrix defining the affine transformation.
+
+    Returns
+    -------
+    np.ndarray
+        Transformed image with the same shape as the input image. If the 
+        transformation fails, returns the original input image unchanged.
+
+    Notes
+    -----
+    This function uses skimage.transform.warp internally to apply the 
+    transformation. If an error occurs during transformation, it logs 
+    the error and returns the original image as a fallback.
+    """
 
     try:
         transform_matrix = np.asarray(affine_matrix, dtype=float)
@@ -86,7 +109,34 @@ def apply_affine_to_image(image: np.ndarray, affine_matrix: np.ndarray) -> np.nd
 
 
 def _determine_s3_json_base(tilenames: Dict[str, List[str]]) -> Optional[str]:
-    """Infer the destination S3 prefix for neuroglancer JSON artefacts."""
+    """
+    Infer the destination S3 prefix for neuroglancer JSON artefacts.
+
+    This function searches through tile URLs to find S3 paths containing specific
+    markers ('image_radial_correction' or 'image_radially_corrected') and constructs
+    a new S3 prefix for storing cross-image alignment JSON files.
+
+    Parameters
+    ----------
+    tilenames : Dict[str, List[str]]
+        A dictionary mapping tile identifiers to lists of URL strings. Each URL
+        represents a location of tile data, potentially including S3 paths.
+
+    Returns
+    -------
+    Optional[str]
+        The inferred S3 prefix path ending with '/image_cross_image_alignment/'
+        if a valid S3 URL with the required markers is found, otherwise None.
+
+    Notes
+    -----
+    The function looks for URLs that:
+    - Start with 's3://'
+    - Contain either 'image_radial_correction' or 'image_radially_corrected'
+
+    The returned prefix is constructed by taking everything before the marker
+    and appending '/image_cross_image_alignment/'.
+    """
 
     for urls in tilenames.values():
         for url in urls:
@@ -100,7 +150,28 @@ def _determine_s3_json_base(tilenames: Dict[str, List[str]]) -> Optional[str]:
 
 
 def _upload_json_to_s3(local_path: Path, s3_json_base: Optional[str]) -> None:
-    """Upload a JSON file to the derived S3 prefix when available."""
+    """
+    Upload a JSON file to the derived S3 prefix when available.
+
+    Parameters
+    ----------
+    local_path : Path
+        The local file system path to the JSON file to be uploaded.
+    s3_json_base : Optional[str]
+        The base S3 prefix (bucket and path) where the JSON file should be uploaded.
+        If None, the upload is skipped. The file name from local_path will be appended
+        to this base path to form the complete S3 destination.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    If the S3 base path is not provided (None), the function returns early without
+    attempting an upload. Any exceptions during the upload process are caught and
+    logged as warnings, but do not raise errors.
+    """
 
     if not s3_json_base:
         return
@@ -114,7 +185,40 @@ def _upload_json_to_s3(local_path: Path, s3_json_base: Optional[str]) -> None:
 
 
 def _cleanup_temp_plot_dirs(*directories: Path) -> None:
-    """Remove all files contained within the provided directories."""
+    """Remove all files contained within the provided directories.
+
+    This function iterates through the provided directories and removes all files
+    and subdirectories contained within them. It handles both regular files and
+    directories recursively.
+
+    Parameters
+    ----------
+    *directories : Path
+        Variable number of Path objects representing directories to clean up.
+        If a directory does not exist, it will be skipped.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    - If a directory does not exist, it is silently skipped
+    - Errors during file/directory removal are logged as warnings but do not
+      raise exceptions
+    - Subdirectories are removed recursively using shutil.rmtree
+    - Regular files are removed using Path.unlink()
+
+    Warnings
+    --------
+    This function permanently deletes files and directories. Use with caution.
+
+    Examples
+    --------
+    >>> temp_dir1 = Path("/tmp/plots1")
+    >>> temp_dir2 = Path("/tmp/plots2")
+    >>> _cleanup_temp_plot_dirs(temp_dir1, temp_dir2)
+    """
 
     for directory in directories:
         if not directory.exists():
@@ -130,7 +234,33 @@ def _cleanup_temp_plot_dirs(*directories: Path) -> None:
 
 
 def ensure_advanced_qc_available() -> None:
-    """Raise a helpful error if advanced QC dependencies are missing."""
+    """
+    Raise a helpful error if advanced QC dependencies are missing.
+
+    This function checks whether the required dependencies for advanced quality control
+    (QC) operations are available. If any required dependencies are missing, it raises
+    a RuntimeError with a descriptive message indicating which dependencies need to be
+    installed.
+
+    Raises
+    ------
+    RuntimeError
+        If ADVANCED_QC_AVAILABLE is False, indicating that one or more of skimage,
+        scipy, or matplotlib are not installed.
+    RuntimeError
+        If PdfPages from matplotlib.backends.backend_pdf is None, indicating that
+        PDF output functionality is unavailable.
+
+    Notes
+    -----
+    This function should be called before attempting to use any advanced QC
+    functionality that depends on these optional packages.
+
+    Examples
+    --------
+    >>> ensure_advanced_qc_available()  # Succeeds if dependencies are installed
+    >>> # Otherwise raises RuntimeError with installation instructions
+    """
 
     if not ADVANCED_QC_AVAILABLE:
         raise RuntimeError(
@@ -144,8 +274,26 @@ def ensure_advanced_qc_available() -> None:
 
 
 def load_json(path: Path) -> Dict:
-    """Load a JSON document from disk."""
+    """
+    Load a JSON document from disk.
 
+    Parameters
+    ----------
+    path : Path
+        The file path to the JSON document to be loaded.
+
+    Returns
+    -------
+    Dict
+        The parsed JSON document as a dictionary.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the specified file does not exist.
+    JSONDecodeError
+        If the file contains invalid JSON.
+    """
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 

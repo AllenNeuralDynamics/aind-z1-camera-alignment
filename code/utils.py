@@ -850,3 +850,361 @@ def read_channels_from_xml(xml_path:str) -> list[int]:
         return channels
     else: 
         return None
+
+
+def get_channel_wavelength_from_single_channel_digit(single_channel_digit):
+    """
+    Convert single channel digit to wavelength string.
+    
+    Parameters
+    ----------
+    single_channel_digit : int or str
+        Single digit or string representing the channel (0-4)
+        
+    Returns
+    -------
+    str or int
+        Wavelength string corresponding to the channel digit, or -1 if invalid
+        
+    Examples
+    --------
+    >>> get_channel_wavelength_from_single_channel_digit('1')
+    '561'
+    >>> get_channel_wavelength_from_single_channel_digit(2)
+    '488'
+    """
+    if single_channel_digit==  0 or single_channel_digit== '0': 
+        return '405'
+    elif single_channel_digit== 1 or single_channel_digit== '1': 
+        return '561'
+    elif single_channel_digit== 2 or single_channel_digit== '2': 
+        return '488'
+    elif single_channel_digit== 3 or single_channel_digit== '3': 
+        return '647'
+    elif single_channel_digit== 4 or single_channel_digit== '4': 
+        return '515'
+    else:  return -1
+
+def get_digit_from_channel_wavelength(wavelength):
+    """
+    Convert wavelength string to single channel digit.
+    
+    Parameters
+    ----------
+    wavelength : str
+        Wavelength string (e.g., '405', '561', '488', '647', '638', '515')
+        
+    Returns
+    -------
+    str or int
+        Single digit string corresponding to the wavelength, or -1 if not found
+        
+    Examples
+    --------
+    >>> get_digit_from_channel_wavelength('561')
+    '1'
+    >>> get_digit_from_channel_wavelength('488') 
+    '2'
+    """
+    lookup = {
+        '405':'0', 
+        '561':'1', 
+        '488':'2',
+        '647':'3',
+        '638':'3',
+        '515':'4'
+    }
+    try:
+        digit = lookup[wavelength]
+    except:
+        digit = -1
+    return digit
+
+def get_list_of_channels(data_loc):
+    """
+    Get list of unique channels from zarr tiles in local or S3 location.
+    
+    Parameters
+    ----------
+    data_loc : str
+        Path to directory containing zarr tiles, or S3 path
+        
+    Returns
+    -------
+    list[str]
+        List of unique channel identifiers found in tile filenames
+        
+    Notes
+    -----
+    Automatically detects S3 paths and delegates to get_list_of_channels_s3.
+    Expects tile filenames in format: 'tile_x_####_y_####_z_####_ch_XXX.zarr'
+    """
+    list_of_tiles = list(glob(f'{data_loc}/*.zarr'))
+
+    if "s3" in data_loc:
+        return get_list_of_channels_s3(data_loc)
+    
+    # find unique channels in the list of tiles
+    channels = []
+    for tile in list_of_tiles:
+        #form is tile_x_0000_y_0000_z_0000_ch_405.zarr
+        channel = tile.split('_')[-1].split('.')[0]
+        if channel not in channels:
+            channels.append(channel)    
+    return channels
+
+def get_list_of_channels_s3(data_loc):
+    """
+    Get list of unique channels from zarr tiles in S3 location.
+    
+    Parameters
+    ----------
+    data_loc : str
+        S3 path to directory containing zarr tiles
+        
+    Returns
+    -------
+    list[str]
+        List of unique channel identifiers found in S3 tile filenames
+        
+    Notes
+    -----
+    Expects tile filenames in format: 'tile_x_####_y_####_z_####_ch_XXX.zarr'
+    """
+    list_of_tiles = list_zarr_tiles_from_s3(data_loc)
+    # find unique channels in the list of tiles
+    channels = []
+    for tile in list_of_tiles:
+        #form is tile_x_0000_y_0000_z_0000_ch_405.zarr
+        channel = tile.split('_')[-1].split('.')[0]
+        if channel not in channels:
+            channels.append(channel)    
+    return channels
+
+def make_pairs_of_channels(channels):
+    """
+    Choose pairs of channels to align based on spectral overlap.
+    
+    Creates sequential pairs of channels that are close in wavelength to each other,
+    which improves alignment quality due to spectral similarity. Skips pairs where
+    the expected bleedthrough between channels is <= 1.
+    
+    Parameters
+    ----------
+    channels : list[str]
+        List of channel wavelengths in the dataset
+        
+    Returns
+    -------
+    list[list[str]]
+        List of pairs of channels to align, where each pair is [channel1, channel2]
+        Only includes pairs with significant spectral bleedthrough (> 1)
+        
+    Examples
+    --------
+    >>> make_pairs_of_channels(['405', '488', '561', '647'])
+    [['405', '488'], ['488', '561']]  # May skip some pairs based on bleedthrough
+        
+    Notes
+    -----
+    Channels are first sorted to ensure consistent pairing order.
+    Each adjacent pair in the sorted list is evaluated for bleedthrough significance.
+    Pairs with bleedthrough values <= 1 in both directions are skipped.
+    """
+    #simplify to be just this list of channels: [[488,514],[514,561],[561,594],[594,638]]
+    approved_list_of_channel_pairs = [['488','514'],['514','561'],['561','594'],['594','638']]
+    #sort the channels
+    channels.sort()
+    
+    #initialize list of pairs
+    pairs = []
+    
+    #iterate through the channels
+    for i in range(len(channels)-1):
+        #get the current channel
+        channel = channels[i]
+        
+        #get the next channel
+        next_channel = channels[i+1]
+        
+        #append the pair to the list of pairs
+        proposed_pair = [channel, next_channel]
+        if proposed_pair in approved_list_of_channel_pairs:
+            pairs.append(proposed_pair)
+
+        
+    return pairs
+
+def make_pairs_of_channels_without_bleedthrough_checking(channels):
+    """
+    Choose pairs of channels to align based on spectral overlap.
+    
+    Creates sequential pairs of channels that are close in wavelength to each other,
+    which improves alignment quality due to spectral similarity.
+    
+    Parameters
+    ----------
+    channels : list[str]
+        List of channel wavelengths in the dataset
+        
+    Returns
+    -------
+    list[list[str]]
+        List of pairs of channels to align, where each pair is [channel1, channel2]
+        
+    Examples
+    --------
+    >>> make_pairs_of_channels(['405', '488', '561', '647'])
+    [['405', '488'], ['488', '561'], ['561', '647']]
+        
+    Notes
+    -----
+    Channels are first sorted to ensure consistent pairing order.
+    Each adjacent pair in the sorted list becomes an alignment pair.
+    """
+
+    #sort the channels
+    channels.sort()
+    
+    #initialize list of pairs
+    pairs = []
+    
+    #iterate through the channels
+    for i in range(len(channels)-1):
+        #get the current channel
+        channel = channels[i]
+        
+        #get the next channel
+        next_channel = channels[i+1]
+        
+        #append the pair to the list of pairs
+        pairs.append([channel, next_channel])
+        
+    return pairs
+
+def make_pairs_of_channels_with_reference(channels, reference_channel):
+    """
+    Create pairs of channels to align with a reference channel that never gets transformed.
+    
+    Creates a spanning tree with the reference channel as the root, where each 
+    non-reference channel is paired with a channel that's already aligned.
+    This ensures the reference channel maintains its original coordinates.
+    
+    Parameters
+    ----------
+    channels : list[str]
+        List of channel wavelengths in the dataset
+    reference_channel : str
+        Channel to use as reference (no transforms applied to this channel)
+        
+    Returns
+    -------
+    list[list[str]]
+        List of pairs where first element is channel to transform, 
+        second element is the reference/already-aligned channel
+        
+    Raises
+    ------
+    ValueError
+        If reference_channel is not found in the channels list
+        
+    Examples
+    --------
+    >>> make_pairs_of_channels_with_reference(['405', '488', '561', '647'], '647')
+    [['561', '647'], ['488', '561'], ['405', '488']]
+        
+    Notes
+    -----
+    Uses wavelength distance as a heuristic for spectral similarity when choosing
+    which already-aligned channel to pair with each unaligned channel.
+    """
+    if reference_channel not in channels:
+        raise ValueError(f"Reference channel '{reference_channel}' not found in channels: {channels}")
+    
+    # Sort channels for consistent behavior
+    sorted_channels = sorted(channels)
+    
+    # Remove reference channel from the list of channels that need transforms
+    other_channels = [ch for ch in sorted_channels if ch != reference_channel]
+    
+    if len(other_channels) == 0:
+        return []  # Only one channel, no pairs needed
+    
+    pairs = []
+    aligned_channels = {reference_channel}  # Start with reference channel as "aligned"
+    
+    # For each channel that needs alignment, pair it with the closest aligned channel
+    while other_channels:
+        best_pair = None
+        best_distance = float('inf')
+        
+        # Find the best channel to align next (closest to an already aligned channel)
+        for unaligned_ch in other_channels:
+            for aligned_ch in aligned_channels:
+                # Use wavelength distance as a heuristic for spectral similarity
+                distance = abs(int(unaligned_ch) - int(aligned_ch))
+                if distance < best_distance:
+                    best_distance = distance
+                    best_pair = (unaligned_ch, aligned_ch)
+        
+        if best_pair:
+            unaligned_ch, aligned_ch = best_pair
+            pairs.append([unaligned_ch, aligned_ch])  # Order: [channel_to_transform, reference_channel]
+            aligned_channels.add(unaligned_ch)
+            other_channels.remove(unaligned_ch)
+        else:
+            # Fallback: just pair with reference channel
+            ch = other_channels.pop(0)
+            pairs.append([ch, reference_channel])
+            aligned_channels.add(ch)
+    
+    return pairs
+
+def create_tile_number_dict(tilenames: list) -> dict:
+    """
+    Create a dictionary mapping tilenames to tile numbers based on raster scanning order.
+    
+    Assigns sequential numbers to tiles based on their X, Y, Z coordinates in 
+    raster scanning order (X fastest, then Y, then Z).
+    
+    Parameters
+    ----------
+    tilenames : list[str]
+        List of unsorted tilenames containing X, Y, Z coordinates
+        Expected format: 'tile_X_####_Y_####_Z_####_ch_XXX.zarr'
+        
+    Returns
+    -------
+    dict[str, int]
+        Dictionary mapping tilenames to tile numbers (0-indexed)
+        
+    Notes
+    -----
+    Only processes tiles from the first channel found to avoid duplicates.
+    Tiles are sorted by (X, Y, Z) coordinates before numbering.
+    """
+    # Extract coordinates and create a list of (tilename, x, y, z) tuples
+    tile_info = []
+    #first channel will be the reference channel 
+    first_channel = tilenames[0].split('_')[-1].split('.')[0]
+
+    for tilename in tilenames:
+
+        channel = tilename.split('_')[-1].split('.')[0]
+        if channel == first_channel:
+            parts = tilename.split("_")
+            x, y, z = parts[2], parts[4], parts[6]
+            tile_info.append((tilename, x, y, z))
+    
+    # Find the maximum dimensions
+    # max_x = max(tile[1] for tile in tile_info)
+    # max_y = max(tile[2] for tile in tile_info)
+    # max_z = max(tile[3] for tile in tile_info)
+    
+    # Sort tiles based on raster scanning order
+    sorted_tiles = sorted(tile_info, key=lambda t: (t[1], t[2], t[3]))
+    
+    # Create the dictionary mapping tilenames to tile numbers
+    tile_number_dict = {tilename: i for i, (tilename, _, _, _) in enumerate(sorted_tiles)}
+    
+    return tile_number_dict
