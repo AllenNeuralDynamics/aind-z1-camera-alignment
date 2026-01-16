@@ -1,5 +1,6 @@
 import s3fs
 import os
+import psutil
 from typing import List, Dict, Any
 import json
 import glob
@@ -12,6 +13,32 @@ import shutil
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+
+def get_code_ocean_cpu_limit():
+    """
+    Gets the Code Ocean capsule CPU limit
+
+    Returns
+    -------
+    int:
+        number of cores available for compute
+    """
+    # Checks for environmental variables
+    co_cpus = os.environ.get("CO_CPUS")
+    aws_batch_job_id = os.environ.get("AWS_BATCH_JOB_ID")
+
+    if co_cpus:
+        return co_cpus
+    if aws_batch_job_id:
+        return 1
+    with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") as fp:
+        cfs_quota_us = int(fp.read())
+    with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us") as fp:
+        cfs_period_us = int(fp.read())
+    container_cpus = cfs_quota_us // cfs_period_us
+    # For physical machine, the `cfs_quota_us` could be '-1'
+    return psutil.cpu_count(logical=False) if container_cpus < 1 else container_cpus
 
 def copy_file(file_path: str, out_path: str) -> str:
     """
