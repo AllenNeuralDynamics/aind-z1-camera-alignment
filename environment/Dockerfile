@@ -21,6 +21,7 @@ RUN pip install -U --no-cache-dir \
     kerchunk==0.2.7 \
     matplotlib==3.9.2 \
     numpy==1.26.4 \
+    psutil==5.9.8 \
     pypdf2==3.0.1 \
     pyyaml==6.0.1 \
     s3fs==2025.7.0 \
@@ -29,4 +30,6 @@ RUN pip install -U --no-cache-dir \
     seaborn==0.13.2 \
     tifffile==2023.7.10 \
     xmltodict==0.14.2 \
-    zarr==2.16.0
+    blosc==1.21.5 \
+    numcodecs==1.12.1 \
+    zarr==2.18.3
