@@ -13,6 +13,7 @@ ARG GIT_ASKPASS
 COPY git-askpass /
 
 RUN pip install -U --no-cache-dir \
+    aind-data-schema==2.4.0 \
     codeocean==0.3.0 \
     dask==2023.7.1 \
     hdf5plugin==5.1.0 \
@@ -27,5 +28,4 @@ RUN pip install -U --no-cache-dir \
     seaborn==0.13.2 \
     tifffile==2023.7.10 \
     xmltodict==0.14.2 \
-    aind-data-schema==2.4.0 \
     zarr==2.16.0
