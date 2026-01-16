@@ -114,7 +114,7 @@ def build_processing_document(
                 )
             ],
             name="input_data",
-            database_identifier=Database(CODEOCEAN),
+            database_identifier=Database("CODEOCEAN"),
             description="Input data for camera alignment",
         )
 
