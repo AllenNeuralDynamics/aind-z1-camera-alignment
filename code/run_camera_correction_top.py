@@ -6,6 +6,7 @@ import sys
 from typing import List, Dict, Any
 
 from cam_affine_cuda import main as run_2d_camera_correction
+from generate_processing_json import generate_processing_json
 import camera_alignment_qc
 from utils import (
     load_data_description,
@@ -81,6 +82,13 @@ def process_zarr_datasets():
         f.write(f"Successfully processed {dataset_name}\n")
         f.write(f"S3 zarr path: {s3_path}\n")
         f.write(f"Number of tiles processed: {len(zarr_tiles)}\n\n")
+
+    # Emit processing.json for cross-image alignment
+    try:
+        processing_path = generate_processing_json(output_dir=results_dir)
+        logger.info(f"Wrote processing.json to {processing_path}")
+    except Exception as exc:  # pragma: no cover - runtime safety
+        logger.warning("Failed to write processing.json: %s", exc)
     
     logger.info(f"Successfully completed processing for {dataset_name}")
     return True
