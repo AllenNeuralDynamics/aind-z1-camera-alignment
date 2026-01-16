@@ -1,6 +1,6 @@
 # hash:sha256:3ccb28c030a975186b16d4054bc54cb4677fcf15ac29d42885a80e5c509f28b4
 ARG REGISTRY_HOST
-FROM $REGISTRY_HOST/codeocean/jupyterlab:3.6.1-miniconda4.12.0-python3.9-ubuntu20.04
+FROM $REGISTRY_HOST/codeocean/mambaforge3:24.5.0-0-python3.12.4-ubuntu22.04
 
 LABEL maintainer="Carson Berry <carson.berry@alleninstitute.org>" \
       org.opencontainers.image.title="Z1 Camera Alignment" \
