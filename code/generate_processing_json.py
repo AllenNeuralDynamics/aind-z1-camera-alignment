@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 try:
-    from aind_data_schema.components.identifiers import Code, Database, CODEOCEAN, CombinedData, DataAsset
+    from aind_data_schema.components.identifiers import Code, Database, CombinedData, DataAsset
     from aind_data_schema.core.processing import (
         DataProcess,
         Processing,
