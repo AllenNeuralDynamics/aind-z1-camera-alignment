@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 try:
-    from aind_data_schema.components.identifiers import Code
+    from aind_data_schema.components.identifiers import Code, Database, CODEOCEAN, CombinedData, DataAsset
     from aind_data_schema.core.processing import (
         DataProcess,
         Processing,
@@ -42,7 +42,7 @@ def _git_metadata() -> Dict[str, Optional[str]]:
     
     # Hardcoded metadata for release builds (edit as needed).
     CODE_URL = "https://github.com/AllenNeuralDynamics/aind-z1-camera-alignment"
-    CODE_VERSION = "manual-release"
+    CODE_VERSION = "1.0.0"
 
     metadata: Dict[str, Optional[str]] = {"repo_url": CODE_URL, "commit": CODE_VERSION}
     try:
@@ -68,6 +68,7 @@ def _git_metadata() -> Dict[str, Optional[str]]:
 
 def build_processing_document(
     output_path: Path,
+    dataset_name: Optional[str] = None,
     experimenters: Optional[List[str]] = None,
     parameters: Optional[Dict[str, object]] = None,
     pipeline_code_name: str = "aind-Z1-pipeline-1.0.0-production",
@@ -82,6 +83,8 @@ def build_processing_document(
         Logical output location for the process (recorded in the schema).
     pipeline_name : str, default "Z1 camera alignment"
         Pipeline name to embed in the document.
+    dataset_name : str, optional
+        Dataset identifier to embed in the input data asset.
     experimenters : list of str, optional
         Names of experimenters to record; defaults to empty list.
     parameters : dict, optional
@@ -102,10 +105,27 @@ def build_processing_document(
     t = datetime.now(timezone.utc)
     meta = _git_metadata()
 
+    input_data = None
+    if dataset_name:
+        input_data = CombinedData(
+            assets=[
+                DataAsset(
+                    url=f"s3://aind-open-data/{dataset_name}/image_radial_correction/",
+                )
+            ],
+            name="input_data",
+            database_identifier=Database(CODEOCEAN),
+            description="Input data for camera alignment",
+        )
+
     code = Code(
         name="aind-z1-camera-alignment",
         version=meta.get("commit") or "unknown",
         url=meta.get("repo_url"),
+        language="python",
+        language_version="3.12.4",
+        input_data=input_data,
+        container=None, #not registered in docker hub yet
         parameters=parameters or {},
     )
 
@@ -149,6 +169,7 @@ def write_processing_json(processing: Processing, destination: Path) -> None:
 def generate_processing_json(
     output_dir: Path = Path("/results"),
     filename: str = "processing.json",
+    dataset_name: Optional[str] = None,
     experimenters: Optional[List[str]] = None,
     parameters: Optional[Dict[str, object]] = None,
     pipeline_code_name: str = "aind-Z1-pipeline-1.0.0-production",
@@ -166,6 +187,8 @@ def generate_processing_json(
         File name for the JSON artifact inside ``output_dir``.
     pipeline_name : str, default "Z1 camera alignment"
         Human-friendly pipeline name to record.
+    dataset_name : str, optional
+        Dataset identifier to embed in the input data asset.
     experimenters : list of str, optional
         Names to attach to the process; defaults to an empty list.
     parameters : dict, optional
@@ -185,6 +208,7 @@ def generate_processing_json(
     destination = output_dir / filename
     processing = build_processing_document(
         output_path=output_dir,
+        dataset_name=dataset_name,
         experimenters=experimenters,
         parameters=parameters,
         pipeline_code_name=pipeline_code_name,
