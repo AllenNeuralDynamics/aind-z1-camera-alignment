@@ -45,7 +45,7 @@ def copy_file_to_s3(file_path: str, s3_location: str) -> bool:
     s3_path_clean = s3_location.replace('s3://', '') if s3_location.startswith('s3://') else s3_location
     
     LOGGER.info(f"Copying {file_path} to s3://{s3_path_clean}")
-    num_cpus = get_code_ocean_cpu_limit()
+    num_cpus = int(get_code_ocean_cpu_limit() or 1)
     
     try:
         # Initialize S3 filesystem
