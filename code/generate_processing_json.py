@@ -119,7 +119,6 @@ def build_processing_document(
         )
 
     code = Code(
-        s
         name="aind-z1-camera-alignment",
         version=meta.get("commit") or "unknown",
         url=meta.get("repo_url"),
