@@ -47,7 +47,11 @@ def _git_metadata() -> Dict[str, Optional[str]]:
     metadata: Dict[str, Optional[str]] = {"repo_url": CODE_URL, "commit": CODE_VERSION}
     try:
         metadata["commit"] = (
-            subprocess.check_output(["git", "rev-parse", "HEAD"], text=True)
+            subprocess.check_output([
+                "git",
+                "rev-parse",
+                "HEAD",
+            ], text=True, stderr=subprocess.DEVNULL)
             .strip()
         )
     except Exception:
@@ -56,7 +60,12 @@ def _git_metadata() -> Dict[str, Optional[str]]:
     try:
         metadata["repo_url"] = (
             subprocess.check_output(
-                ["git", "config", "--get", "remote.origin.url"], text=True
+                [
+                    "git",
+                    "config",
+                    "--get",
+                    "remote.origin.url",
+                ], text=True, stderr=subprocess.DEVNULL
             )
             .strip()
         )
@@ -106,17 +115,18 @@ def build_processing_document(
     meta = _git_metadata()
 
     input_data = None
-    if dataset_name:
-        input_data = CombinedData(
-            assets=[
-                DataAsset(
-                    url=f"s3://aind-open-data/{dataset_name}/image_radial_correction/",
-                )
-            ],
-            name="input_data",
-            database_identifier=None,
-            description="Input data for camera alignment",
-        )
+    # if dataset_name:
+    #     input_data = [
+    #         CombinedData(
+    #             assets=[
+    #                 DataAsset(
+    #                     url=f"s3://aind-open-data/{dataset_name}/image_radial_correction/",
+    #                 )
+    #             ],
+    #             name="input_data",
+    #             description="Input data for camera alignment",
+    #         )
+    #     ]
 
     code = Code(
         name="aind-z1-camera-alignment",
