@@ -114,11 +114,12 @@ def build_processing_document(
                 )
             ],
             name="input_data",
-            database_identifier=Database("CODEOCEAN"),
+            database_identifier=None,
             description="Input data for camera alignment",
         )
 
     code = Code(
+        s
         name="aind-z1-camera-alignment",
         version=meta.get("commit") or "unknown",
         url=meta.get("repo_url"),
