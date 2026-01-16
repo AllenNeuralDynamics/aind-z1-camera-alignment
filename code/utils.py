@@ -9,7 +9,6 @@ import logging
 import xmltodict
 from collections import OrderedDict
 import shutil
-from glob import glob
 
 
 logging.basicConfig(level=logging.INFO)
@@ -968,7 +967,7 @@ def get_list_of_channels(data_loc):
     Automatically detects S3 paths and delegates to get_list_of_channels_s3.
     Expects tile filenames in format: 'tile_x_####_y_####_z_####_ch_XXX.zarr'
     """
-    list_of_tiles = list(glob(f'{data_loc}/*.zarr'))
+    list_of_tiles = list(glob.glob(f'{data_loc}/*.zarr'))
 
     if "s3" in data_loc:
         return get_list_of_channels_s3(data_loc)
