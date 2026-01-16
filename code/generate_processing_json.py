@@ -40,7 +40,11 @@ def _git_metadata() -> Dict[str, Optional[str]]:
         the information cannot be retrieved (e.g., not a git checkout).
     """
     
-    metadata: Dict[str, Optional[str]] = {"repo_url": None, "commit": None}
+    # Hardcoded metadata for release builds (edit as needed).
+    CODE_URL = "https://github.com/AllenNeuralDynamics/aind-z1-camera-alignment"
+    CODE_VERSION = "manual-release"
+
+    metadata: Dict[str, Optional[str]] = {"repo_url": CODE_URL, "commit": CODE_VERSION}
     try:
         metadata["commit"] = (
             subprocess.check_output(["git", "rev-parse", "HEAD"], text=True)
