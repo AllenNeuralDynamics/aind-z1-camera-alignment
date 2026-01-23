@@ -13,7 +13,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
-from . import __maintainers__, __pipeline_version__, __version__, __url__
+from __init__ import __maintainers__, __pipeline_version__, __version__, __url__
 
 try:
     from aind_data_schema.components.identifiers import Code, Database, CombinedData, DataAsset
