@@ -13,6 +13,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+from . import __maintainers__, __pipeline_version__, __version__, __url__
 
 try:
     from aind_data_schema.components.identifiers import Code, Database, CombinedData, DataAsset
@@ -41,8 +42,8 @@ def _git_metadata() -> Dict[str, Optional[str]]:
     """
     
     # Hardcoded metadata for release builds (edit as needed).
-    CODE_URL = "https://github.com/AllenNeuralDynamics/aind-z1-camera-alignment"
-    CODE_VERSION = "1.0.0"
+    CODE_URL = __url__
+    CODE_VERSION = __version__
 
     metadata: Dict[str, Optional[str]] = {"repo_url": CODE_URL, "commit": CODE_VERSION}
     try:
@@ -82,7 +83,7 @@ def build_processing_document(
     parameters: Optional[Dict[str, object]] = None,
     pipeline_code_name: str = "aind-Z1-pipeline-1.0.0-production",
     pipeline_code_url: str = "https://codeocean.allenneuraldynamics.org/capsule/6036323/tree",
-    pipeline_code_version: str = "1.0.0-production",
+    pipeline_code_version: str = __pipeline_version__,
 ) -> Processing:
     """Construct a ``Processing`` document for image cross-image alignment.
 

@@ -15,5 +15,7 @@ __maintainer_emails__ = [
     "carson.berry@alleninstitute.org",
 ]
 __title__ = "aind-z1-camera-alignment"
+__url__ = "https://github.com/AllenNeuralDynamics/aind-z1-camera-alignment"
+
 __status__ = "Production"  # 'Development' 'Production', 'Beta'
 __pipeline_version__ = "1.0.0"
