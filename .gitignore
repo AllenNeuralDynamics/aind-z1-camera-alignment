@@ -3,6 +3,7 @@
 /results/
 /scratch/
 metadata/metadata.yml
+.codeocean/datasets.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -151,3 +152,4 @@ dmypy.json
 !.vscode/launch.json
 !.vscode/extensions.json
 !.vscode/*.code-snippets
+.vscode
