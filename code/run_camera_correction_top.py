@@ -56,7 +56,7 @@ def process_zarr_datasets():
         
     # Get project name to determine if we should skip alignment
     project_name = get_project_name()
-    skip_alignment = (project_name == "PLACE")
+    skip_alignment = False #(project_name == "PLACE")
     
     # Set up arguments for the correction function
     args = {
