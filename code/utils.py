@@ -481,8 +481,8 @@ def add_affine_to_xml(xml_path: str, channel_affine: list, tilename: str, output
     if not isinstance(current_transforms, list):
         current_transforms = [current_transforms]
     
-    # Insert the new transform at the beginning (highest priority)
-    current_transforms.insert(0, new_view_transform)
+    # APPEND the new transform at the end (applied first means raw pixel frame)
+    current_transforms.append(new_view_transform)
     
     # Update the view registration
     data["SpimData"]["ViewRegistrations"]["ViewRegistration"][tile_number]["ViewTransform"] = current_transforms
