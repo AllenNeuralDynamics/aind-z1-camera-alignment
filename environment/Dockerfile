@@ -14,7 +14,7 @@ COPY git-askpass /
 
 RUN python -m pip install --upgrade pip setuptools wheel
 RUN pip install -U --no-cache-dir \
-    aind-data-schema==2.4.0 \
+    aind-data-schema==2.9.0 \
     codeocean==0.3.0 \
     dask==2025.12.0 \
     hdf5plugin==5.1.0 \
