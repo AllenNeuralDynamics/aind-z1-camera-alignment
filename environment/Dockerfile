@@ -10,7 +10,7 @@ LABEL maintainer="Carson Berry <carson.berry@alleninstitute.org>" \
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_ASKPASS
-COPY git-askpass /
+COPY git-ask-pass /
 
 RUN python -m pip install --upgrade pip setuptools wheel
 RUN pip install -U --no-cache-dir \
