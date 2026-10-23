@@ -405,10 +405,6 @@ def update_processing_json_on_s3(
         LOGGER.info("No existing processing.json at %s; writing new document.", s3_uri)
         merged = new_processing.model_dump(mode="json")
 
-    # destination = output_dir / filename
-    # destination.parent.mkdir(parents=True, exist_ok=True)
-    # destination.write_text(json.dumps(merged, indent=2))
-
     write_json_to_s3(merged, s3_uri)
     return s3_uri
 
