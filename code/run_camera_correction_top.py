@@ -6,7 +6,7 @@ import sys
 from typing import List, Dict, Any
 
 from cam_affine_cuda import main as run_2d_camera_correction
-from generate_processing_json import generate_processing_json
+from generate_processing_json import generate_processing_json, update_processing_json_on_s3
 import camera_alignment_qc
 from utils import (
     load_data_description,
@@ -93,6 +93,18 @@ def process_zarr_datasets():
         logger.info(f"Wrote processing.json to {processing_path}")
     except Exception as exc:  # pragma: no cover - runtime safety
         logger.warning("Failed to write processing.json: %s", exc)
+
+    # Merge our data process into the dataset's existing processing.json on S3
+    try:
+        s3_uri = update_processing_json_on_s3(
+            dataset_name=dataset_name,
+            output_dir=results_dir,
+            bucket="aind-open-data",
+            parameters=args,
+        )
+        logger.info(f"Updated processing.json on S3 at {s3_uri}")
+    except Exception as exc:  # pragma: no cover - runtime safety
+        logger.warning("Failed to update processing.json on S3: %s", exc)
     
     logger.info(f"Successfully completed processing for {dataset_name}")
     return True
