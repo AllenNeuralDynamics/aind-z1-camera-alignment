@@ -2,13 +2,11 @@
 # affines are found based on camera and exposure
 
 import sys, os, csv, numpy as np
-import time, threading
 from glob import glob
-import zarr
 from pathlib import Path
-from calc_affine import calc_affine, get_channel_wavelength_from_single_channel_digit
+from calc_affine import calc_affine
 import logging
-from s3_writer import get_resolution_zyx, copy_file_to_s3
+from s3_writer import copy_file_to_s3
 from typing import List, Dict, Any
 import pathlib
 from utils import (

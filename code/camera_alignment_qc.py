@@ -75,7 +75,30 @@ class QCSettings:
 
 
 def apply_affine_to_image(image: np.ndarray, affine_matrix: np.ndarray) -> np.ndarray:
-    """Apply a 2D affine transform to an image plane."""
+    """
+    Apply a 2D affine transform to an image plane.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        Input image array to be transformed. Should be a 2D array representing
+        a single image plane.
+    affine_matrix : np.ndarray
+        2D affine transformation matrix to apply to the image. Should be a 
+        2x3 or 3x3 matrix defining the affine transformation.
+
+    Returns
+    -------
+    np.ndarray
+        Transformed image with the same shape as the input image. If the 
+        transformation fails, returns the original input image unchanged.
+
+    Notes
+    -----
+    This function uses skimage.transform.warp internally to apply the 
+    transformation. If an error occurs during transformation, it logs 
+    the error and returns the original image as a fallback.
+    """
 
     try:
         transform_matrix = np.asarray(affine_matrix, dtype=float)
@@ -86,7 +109,34 @@ def apply_affine_to_image(image: np.ndarray, affine_matrix: np.ndarray) -> np.nd
 
 
 def _determine_s3_json_base(tilenames: Dict[str, List[str]]) -> Optional[str]:
-    """Infer the destination S3 prefix for neuroglancer JSON artefacts."""
+    """
+    Infer the destination S3 prefix for neuroglancer JSON artefacts.
+
+    This function searches through tile URLs to find S3 paths containing specific
+    markers ('image_radial_correction' or 'image_radially_corrected') and constructs
+    a new S3 prefix for storing cross-image alignment JSON files.
+
+    Parameters
+    ----------
+    tilenames : Dict[str, List[str]]
+        A dictionary mapping tile identifiers to lists of URL strings. Each URL
+        represents a location of tile data, potentially including S3 paths.
+
+    Returns
+    -------
+    Optional[str]
+        The inferred S3 prefix path ending with '/image_cross_image_alignment/'
+        if a valid S3 URL with the required markers is found, otherwise None.
+
+    Notes
+    -----
+    The function looks for URLs that:
+    - Start with 's3://'
+    - Contain either 'image_radial_correction' or 'image_radially_corrected'
+
+    The returned prefix is constructed by taking everything before the marker
+    and appending '/image_cross_image_alignment/'.
+    """
 
     for urls in tilenames.values():
         for url in urls:
@@ -100,7 +150,28 @@ def _determine_s3_json_base(tilenames: Dict[str, List[str]]) -> Optional[str]:
 
 
 def _upload_json_to_s3(local_path: Path, s3_json_base: Optional[str]) -> None:
-    """Upload a JSON file to the derived S3 prefix when available."""
+    """
+    Upload a JSON file to the derived S3 prefix when available.
+
+    Parameters
+    ----------
+    local_path : Path
+        The local file system path to the JSON file to be uploaded.
+    s3_json_base : Optional[str]
+        The base S3 prefix (bucket and path) where the JSON file should be uploaded.
+        If None, the upload is skipped. The file name from local_path will be appended
+        to this base path to form the complete S3 destination.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    If the S3 base path is not provided (None), the function returns early without
+    attempting an upload. Any exceptions during the upload process are caught and
+    logged as warnings, but do not raise errors.
+    """
 
     if not s3_json_base:
         return
@@ -114,7 +185,40 @@ def _upload_json_to_s3(local_path: Path, s3_json_base: Optional[str]) -> None:
 
 
 def _cleanup_temp_plot_dirs(*directories: Path) -> None:
-    """Remove all files contained within the provided directories."""
+    """Remove all files contained within the provided directories.
+
+    This function iterates through the provided directories and removes all files
+    and subdirectories contained within them. It handles both regular files and
+    directories recursively.
+
+    Parameters
+    ----------
+    *directories : Path
+        Variable number of Path objects representing directories to clean up.
+        If a directory does not exist, it will be skipped.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    - If a directory does not exist, it is silently skipped
+    - Errors during file/directory removal are logged as warnings but do not
+      raise exceptions
+    - Subdirectories are removed recursively using shutil.rmtree
+    - Regular files are removed using Path.unlink()
+
+    Warnings
+    --------
+    This function permanently deletes files and directories. Use with caution.
+
+    Examples
+    --------
+    >>> temp_dir1 = Path("/tmp/plots1")
+    >>> temp_dir2 = Path("/tmp/plots2")
+    >>> _cleanup_temp_plot_dirs(temp_dir1, temp_dir2)
+    """
 
     for directory in directories:
         if not directory.exists():
@@ -130,7 +234,33 @@ def _cleanup_temp_plot_dirs(*directories: Path) -> None:
 
 
 def ensure_advanced_qc_available() -> None:
-    """Raise a helpful error if advanced QC dependencies are missing."""
+    """
+    Raise a helpful error if advanced QC dependencies are missing.
+
+    This function checks whether the required dependencies for advanced quality control
+    (QC) operations are available. If any required dependencies are missing, it raises
+    a RuntimeError with a descriptive message indicating which dependencies need to be
+    installed.
+
+    Raises
+    ------
+    RuntimeError
+        If ADVANCED_QC_AVAILABLE is False, indicating that one or more of skimage,
+        scipy, or matplotlib are not installed.
+    RuntimeError
+        If PdfPages from matplotlib.backends.backend_pdf is None, indicating that
+        PDF output functionality is unavailable.
+
+    Notes
+    -----
+    This function should be called before attempting to use any advanced QC
+    functionality that depends on these optional packages.
+
+    Examples
+    --------
+    >>> ensure_advanced_qc_available()  # Succeeds if dependencies are installed
+    >>> # Otherwise raises RuntimeError with installation instructions
+    """
 
     if not ADVANCED_QC_AVAILABLE:
         raise RuntimeError(
@@ -144,8 +274,26 @@ def ensure_advanced_qc_available() -> None:
 
 
 def load_json(path: Path) -> Dict:
-    """Load a JSON document from disk."""
+    """
+    Load a JSON document from disk.
 
+    Parameters
+    ----------
+    path : Path
+        The file path to the JSON document to be loaded.
+
+    Returns
+    -------
+    Dict
+        The parsed JSON document as a dictionary.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the specified file does not exist.
+    JSONDecodeError
+        If the file contains invalid JSON.
+    """
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
@@ -183,19 +331,60 @@ def convert_s3_to_local(url: str, data_dir: Path) -> Path:
 
 
 def _clamp_slice(center: int, half_width: int, upper_bound: int) -> slice:
+    """Create a bounded slice around a center point.
+
+    Parameters
+    ----------
+    center : int
+        Center index of the desired window.
+    half_width : int
+        Half the width of the window (total width is roughly ``2 * half_width``).
+    upper_bound : int
+        Maximum valid index (exclusive) for the dimension being sliced.
+
+    Returns
+    -------
+    slice
+        Slice object that stays within ``[0, upper_bound]``.
+    """
     start = max(0, center - half_width)
     end = min(upper_bound, center + half_width)
     return slice(start, end)
 
 
 def _get_dataset_name(): 
+    """Return the first dataset name found under the camera correction root.
+
+    Returns
+    -------
+    str or None
+        Dataset directory name beginning with ``"HCR"`` if found, otherwise
+        ``None`` when no matching directory exists.
+    """
+
     data_folder = Path('/data/camera_correction')
     for path in data_folder.iterdir():
         if path.is_dir() and path.name.startswith("HCR"):
-            return path.name 
+            return path.name
+    return None
 
 
 def _prepare_output_dirs(output_dir: Path, dataset_name: str) -> Tuple[Path, Path, Path, Path]:
+    """Create and return output directories for a dataset.
+
+    Parameters
+    ----------
+    output_dir : Path
+        Root directory where QC artefacts should be written.
+    dataset_name : str
+        Name of the dataset being processed; used to namespace outputs.
+
+    Returns
+    -------
+    tuple of Path
+        ``(output_dir, png_dir, pdf_dir, json_dir)`` paths that are ensured to
+        exist on disk.
+    """
     output_dir = output_dir / f"{dataset_name}/camera_alignment_QC"
     png_dir = output_dir / "png_files"
     pdf_dir = output_dir / "pdf_files"
@@ -212,6 +401,23 @@ def _prepare_channel_layers(
     rc_data: Dict,
     channel_names: Sequence[str],
 ) -> Tuple[Dict[str, Dict], Dict[str, Dict]]:
+    """Build camera-corrected and radial-corrected layer dicts per channel.
+
+    Parameters
+    ----------
+    cc_data : dict
+        Neuroglancer JSON data for camera-corrected layers.
+    rc_data : dict
+        Neuroglancer JSON data for radial-corrected layers.
+    channel_names : Sequence[str]
+        Ordered list of channel identifiers (e.g., ``"CH_488"``).
+
+    Returns
+    -------
+    tuple of dict
+        ``(cc_layers, rc_layers)`` mapping channel name to a deep-copied layer
+        definition with the name suffixed by ``_cc`` or ``_rc`` respectively.
+    """
     cc_layers: Dict[str, Dict] = {}
     rc_layers: Dict[str, Dict] = {}
 
@@ -237,6 +443,22 @@ def _extract_affine_metadata(
     cc_layers: Dict[str, Dict],
     ordered_channels: Sequence[str],
 ) -> Tuple[Dict[str, List[str]], Dict[str, np.ndarray]]:
+    """Extract tile URLs and affine matrices from neuroglancer layer data.
+
+    Parameters
+    ----------
+    cc_layers : dict
+        Mapping from channel name to camera-corrected layer metadata.
+    ordered_channels : Sequence[str]
+        Channels ordered from lowest to highest wavelength.
+
+    Returns
+    -------
+    tuple
+        ``(tilenames, affine_matrices)`` where ``tilenames`` maps channel to a
+        list of tile URLs ordered by distance from the reference center, and
+        ``affine_matrices`` maps channel to a 3x3 affine matrix (numpy array).
+    """
     tilenames: Dict[str, List[str]] = {}
     affine_matrices: Dict[str, np.ndarray] = {}
 
@@ -291,6 +513,29 @@ def _create_pair_templates(
     output_dir: Path,
     s3_json_base: Optional[str],
 ) -> Dict[Tuple[str, str], Path]:
+    """Create base neuroglancer JSON templates for each adjacent channel pair.
+
+    Parameters
+    ----------
+    template_data : dict
+        Base neuroglancer JSON to clone for each pair.
+    cc_layers : dict
+        Mapping of channel to camera-corrected layer metadata.
+    rc_layers : dict
+        Mapping of channel to radial-corrected layer metadata.
+    channel_pairs : Sequence[tuple[str, str]]
+        Iterable of channel pairs ``(channel_a, channel_b)`` to template.
+    output_dir : Path
+        Directory where pair template JSON files will be written.
+    s3_json_base : str or None
+        Optional S3 prefix to which generated JSONs should also be uploaded.
+
+    Returns
+    -------
+    dict
+        Mapping from channel pair tuple to the path of the written template
+        JSON file.
+    """
     pair_template_paths: Dict[Tuple[str, str], Path] = {}
 
     for channel_a, channel_b in channel_pairs:
@@ -352,6 +597,24 @@ def _load_tile_stack(
     planes: Sequence[int],
     pyramid_level: str,
 ) -> np.ndarray:
+    """Load a subset of planes from a zarr tile stack.
+
+    Parameters
+    ----------
+    tilename_s3 : str
+        Zarr path or S3 URL to the tile.
+    data_dir : Path
+        Local data root used when converting S3 URLs to on-disk paths.
+    planes : Sequence[int]
+        Z plane indices to extract.
+    pyramid_level : str
+        Pyramid level to read from the zarr.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``(len(planes), Y, X)`` containing the requested planes.
+    """
     tile_zarr = da.from_zarr(tilename_s3, pyramid_level)
     # Expecting shape (C, T, Z, Y, X); select first channel/time to mirror scientist code
     tile_stack = tile_zarr[0, 0, planes, ...].compute()
@@ -359,6 +622,20 @@ def _load_tile_stack(
 
 
 def _apply_affine_stack(stack: np.ndarray, affine: np.ndarray) -> np.ndarray:
+    """Apply a single affine transform to every plane in a stack.
+
+    Parameters
+    ----------
+    stack : np.ndarray
+        Image stack with shape ``(planes, Y, X)`` to be transformed.
+    affine : np.ndarray
+        2D affine matrix (2x3 or 3x3) to apply to each plane.
+
+    Returns
+    -------
+    np.ndarray
+        Transformed stack with the same shape as ``stack``.
+    """
     transformed = np.zeros_like(stack, dtype=np.float32)
     for index, plane in enumerate(stack):
         transformed[index, ...] = apply_affine_to_image(plane, affine)
@@ -366,6 +643,19 @@ def _apply_affine_stack(stack: np.ndarray, affine: np.ndarray) -> np.ndarray:
 
 
 def _compute_planes(tile_shape: Tuple[int, int, int]) -> Tuple[np.ndarray, int, int]:
+    """Select representative Z planes for QC plots.
+
+    Parameters
+    ----------
+    tile_shape : tuple[int, int, int]
+        Shape of a tile stack as ``(Z, Y, X)``.
+
+    Returns
+    -------
+    tuple
+        ``(planes, y_dim, x_dim)`` where ``planes`` is an array of selected Z
+        indices and ``y_dim``/``x_dim`` are the Y/X dimensions of the tile.
+    """
     z_dim, y_dim, x_dim = tile_shape
     thickness = z_dim // 3
     spacing = max(1, z_dim // 5)
@@ -379,6 +669,23 @@ def _generate_histogram_axes(
     num_tiles: int,
     num_pairs: int,
 ) -> Tuple[np.ndarray, np.ndarray, plt.Figure, plt.Figure]:
+    """Allocate histogram and scatter axes grids for QC plots.
+
+    Parameters
+    ----------
+    num_planes : int
+        Number of Z planes sampled per tile.
+    num_tiles : int
+        Number of tiles being processed.
+    num_pairs : int
+        Number of adjacent channel pairs.
+
+    Returns
+    -------
+    tuple
+        ``(axs_hist, axs_scatter, fig_hist, fig_scatter)`` where axes are 2-D
+        numpy arrays shaped for indexing by row and channel pair.
+    """
     if num_planes == 0 or num_tiles == 0 or num_pairs == 0:
         return (
             np.empty((0, 0)),
@@ -466,6 +773,28 @@ def _find_peak_regions(
     tile_width: int,
     top_n_points: int,
 ) -> np.ndarray:
+    """Locate peak correspondence regions between two point sets.
+
+    Parameters
+    ----------
+    points_1 : np.ndarray
+        Matched points from channel A with shape ``(N, 2)``.
+    points_2 : np.ndarray
+        Matched points from channel B with shape ``(N, 2)``.
+    n_bins : int
+        Number of histogram bins per dimension.
+    tile_height : int
+        Height of the tile in pixels.
+    tile_width : int
+        Width of the tile in pixels.
+    top_n_points : int
+        Maximum number of peak regions to return.
+
+    Returns
+    -------
+    np.ndarray
+        Array of peak coordinates with shape ``(K, 2)`` in (x, y) order.
+    """
     if points_1.size == 0 or points_2.size == 0:
         return np.empty((0, 2))
 
@@ -512,6 +841,22 @@ def _find_peak_regions(
 
 
 def _normalise_channel_range(image: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
+    """Clip and scale an image to the ``[0, 1]`` range using provided bounds.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        Input image data.
+    vmin : float
+        Lower clipping bound.
+    vmax : float
+        Upper clipping bound.
+
+    Returns
+    -------
+    np.ndarray
+        Float32 array scaled to ``[0, 1]`` after clipping.
+    """
     clipped = np.clip(image, vmin, vmax)
     normalised = (clipped - vmin) / (vmax - vmin)
     return normalised.astype(np.float32)
@@ -522,6 +867,17 @@ def _apply_intensity_scaling(
     intensity_range: Tuple[float, float],
     visible: bool,
 ) -> None:
+    """Update neuroglancer layer intensity range and visibility flags.
+
+    Parameters
+    ----------
+    layer : dict
+        Layer dictionary to modify in-place.
+    intensity_range : tuple[float, float]
+        ``(vmin, vmax)`` range for normalized shader controls.
+    visible : bool
+        Whether to set the layer visible in neuroglancer.
+    """
     layer.setdefault("shaderControls", {}).setdefault("normalized", {})["range"] = [
         float(intensity_range[0]),
         float(intensity_range[1]),
@@ -530,6 +886,14 @@ def _apply_intensity_scaling(
 
 
 def _adjust_transform_offsets(json_data: Dict) -> None:
+    """Align CC and RC layer offsets so overlays share a common origin.
+
+    Parameters
+    ----------
+    json_data : dict
+        Neuroglancer state dictionary containing four layers (CC/RC per channel)
+        whose transforms are adjusted in-place.
+    """
     layers = json_data["layers"]
     cc_a, cc_b, rc_a, rc_b = layers
 
@@ -567,6 +931,43 @@ def _create_zoom_visualisation(
     tile_1_transformed: np.ndarray,
     tile_2_transformed: np.ndarray,
 ) -> None:
+    """Generate zoomed QC overlays, JSONs, and artifacts for a channel pair.
+
+    Parameters
+    ----------
+    channel_pair : tuple[str, str]
+        Pair of channel names (camera-corrected identifiers) to visualise.
+    dataset_name : str
+        Dataset identifier for output naming and neuroglancer URLs.
+    tile_index : int
+        Index of the tile being processed within the channel list.
+    plane_index : int
+        Index into the selected plane list for this tile.
+    plane_value : int
+        Z position corresponding to the plane.
+    peaks : np.ndarray
+        Peak coordinates array of shape ``(K, 2)`` in (x, y) order.
+    tilenames : dict
+        Mapping from channel to list of tile URLs.
+    pair_template_path : Path
+        Path to the base neuroglancer JSON template for this pair.
+    output_dirs : tuple[Path, Path, Path, Path]
+        Tuple of directories ``(output_dir, png_dir, pdf_dir, json_dir)``.
+    s3_json_base : str or None
+        Optional S3 prefix for uploading generated JSONs.
+    data_dir : Path
+        Local data root; retained for interface consistency.
+    settings : QCSettings
+        QC configuration parameters.
+    tile_1_stack : np.ndarray
+        Raw stack for channel A (planes, Y, X).
+    tile_2_stack : np.ndarray
+        Raw stack for channel B (planes, Y, X).
+    tile_1_transformed : np.ndarray
+        Affine-transformed stack for channel A.
+    tile_2_transformed : np.ndarray
+        Affine-transformed stack for channel B.
+    """
     output_dir, png_dir, pdf_dir, json_dir = output_dirs
     channel_a, channel_b = channel_pair
 
@@ -710,6 +1111,46 @@ def _process_channel_pair(
     tile_width: int,
     channel_cache: Dict[Tuple[str, int], Tuple[np.ndarray, np.ndarray]],
 ) -> None:
+    """Run full QC processing for a single channel pair and tile index.
+
+    Parameters
+    ----------
+    channel_pair : tuple[str, str]
+        Adjacent channel pair identifiers.
+    dataset_name : str
+        Dataset name used for output labels.
+    tile_index : int
+        Tile index to process.
+    tile_row_index : int
+        Row index of the tile in plotting grids.
+    planes : Sequence[int]
+        Z planes selected for analysis.
+    axs_hist : np.ndarray
+        2-D array of histogram axes.
+    axs_scatter : np.ndarray
+        2-D array of scatter axes.
+    settings : QCSettings
+        QC configuration parameters.
+    tilenames : dict
+        Mapping from channel to list of tile URLs.
+    affine_matrices : dict
+        Mapping from channel to 3x3 affine matrices.
+    output_dirs : tuple[Path, Path, Path, Path]
+        Tuple of output directories ``(output_dir, png_dir, pdf_dir, json_dir)``.
+    pair_template_paths : dict
+        Mapping from channel pair to base neuroglancer template path.
+    s3_json_base : str or None
+        Optional S3 prefix for uploading generated JSONs.
+    data_dir : Path
+        Local data root; retained for interface consistency.
+    tile_height : int
+        Height of each tile.
+    tile_width : int
+        Width of each tile.
+    channel_cache : dict
+        Cache mapping ``(channel, tile_index)`` to raw and transformed stacks to
+        avoid reloading.
+    """
     channel_a, channel_b = channel_pair
 
     def fetch_channel_stack(channel: str) -> Tuple[np.ndarray, np.ndarray]:
@@ -858,6 +1299,17 @@ def _merge_pair_pdfs(
     pdf_dir: Path,
     output_dir: Path,
 ) -> None:
+    """Merge per-tile PDFs into a per-pair summary PDF when possible.
+
+    Parameters
+    ----------
+    channel_pairs : Sequence[tuple[str, str]]
+        Channel pairs processed in the QC run.
+    pdf_dir : Path
+        Directory containing per-tile PDF files.
+    output_dir : Path
+        Directory where merged PDFs should be written.
+    """
     for channel_a, channel_b in channel_pairs:
         pdf_list = [
             pdf_path
