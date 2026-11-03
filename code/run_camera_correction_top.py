@@ -84,15 +84,15 @@ def process_zarr_datasets():
         f.write(f"Number of tiles processed: {len(zarr_tiles)}\n\n")
 
     # Emit processing.json for cross-image alignment
-    try:
-        processing_path = generate_processing_json(
-            output_dir=results_dir,
-            dataset_name=dataset_name,
-            parameters =args,
-        )
-        logger.info(f"Wrote processing.json to {processing_path}")
-    except Exception as exc:  # pragma: no cover - runtime safety
-        logger.warning("Failed to write processing.json: %s", exc)
+    # try:
+    #     processing_path = generate_processing_json(
+    #         output_dir=results_dir,
+    #         dataset_name=dataset_name,
+    #         parameters =args,
+    #     )
+    #     logger.info(f"Wrote processing.json to {processing_path}")
+    # except Exception as exc:  # pragma: no cover - runtime safety
+    #     logger.warning("Failed to write processing.json: %s", exc)
 
     # Merge our data process into the dataset's existing processing.json on S3
     try:
